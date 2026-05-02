@@ -78,13 +78,17 @@ type querier interface {
 // ===================== Node operations =====================
 
 func (s *sqliteStore) ListNodes(ctx context.Context, filter NodeFilter) ([]Node, error) {
-	query := "SELECT id, uri, name, source, port, username, password, region, country, enabled, created_at, updated_at FROM nodes"
+	query := "SELECT id, uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at FROM nodes"
 	var conditions []string
 	var args []any
 
 	if filter.Source != "" {
 		conditions = append(conditions, "source = ?")
 		args = append(args, filter.Source)
+	}
+	if filter.SubscriptionID > 0 {
+		conditions = append(conditions, "subscription_id = ?")
+		args = append(args, filter.SubscriptionID)
 	}
 	if filter.Region != "" {
 		conditions = append(conditions, "region = ?")
@@ -121,19 +125,19 @@ func (s *sqliteStore) ListNodes(ctx context.Context, filter NodeFilter) ([]Node,
 
 func (s *sqliteStore) GetNode(ctx context.Context, id int64) (*Node, error) {
 	row := s.conn().QueryRowContext(ctx,
-		"SELECT id, uri, name, source, port, username, password, region, country, enabled, created_at, updated_at FROM nodes WHERE id = ?", id)
+		"SELECT id, uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at FROM nodes WHERE id = ?", id)
 	return scanNode(row)
 }
 
 func (s *sqliteStore) GetNodeByURI(ctx context.Context, uri string) (*Node, error) {
 	row := s.conn().QueryRowContext(ctx,
-		"SELECT id, uri, name, source, port, username, password, region, country, enabled, created_at, updated_at FROM nodes WHERE uri = ?", uri)
+		"SELECT id, uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at FROM nodes WHERE uri = ?", uri)
 	return scanNode(row)
 }
 
 func (s *sqliteStore) GetNodeByName(ctx context.Context, name string) (*Node, error) {
 	row := s.conn().QueryRowContext(ctx,
-		"SELECT id, uri, name, source, port, username, password, region, country, enabled, created_at, updated_at FROM nodes WHERE name = ?", name)
+		"SELECT id, uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at FROM nodes WHERE name = ?", name)
 	return scanNode(row)
 }
 
@@ -151,10 +155,10 @@ func (s *sqliteStore) CreateNode(ctx context.Context, node *Node) error {
 	}
 
 	result, err := s.conn().ExecContext(ctx,
-		`INSERT INTO nodes (uri, name, source, port, username, password, region, country, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO nodes (uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		node.URI, node.Name, node.Source, node.Port,
-		node.Username, node.Password, node.Region, node.Country,
+		node.Username, node.Password, node.SubscriptionID, node.Region, node.Country,
 		enabled, now, now,
 	)
 	if err != nil {
@@ -186,10 +190,10 @@ func (s *sqliteStore) UpdateNode(ctx context.Context, node *Node) error {
 
 	result, err := s.conn().ExecContext(ctx,
 		`UPDATE nodes SET uri=?, name=?, source=?, port=?, username=?, password=?,
-		 region=?, country=?, enabled=?, updated_at=?
+		 subscription_id=?, region=?, country=?, enabled=?, updated_at=?
 		 WHERE id=?`,
 		node.URI, node.Name, node.Source, node.Port,
-		node.Username, node.Password, node.Region, node.Country,
+		node.Username, node.Password, node.SubscriptionID, node.Region, node.Country,
 		enabled, now, node.ID,
 	)
 	if err != nil {
@@ -231,11 +235,12 @@ func (s *sqliteStore) BulkUpsertNodes(ctx context.Context, nodes []Node) error {
 	execFn := func(txStore *sqliteStore) error {
 		now := time.Now().UTC().Format(time.RFC3339)
 		stmt, err := txStore.conn().PrepareContext(ctx,
-			`INSERT INTO nodes (uri, name, source, port, username, password, region, country, enabled, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`INSERT INTO nodes (uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(uri) DO UPDATE SET
 			   name=excluded.name, source=excluded.source, port=excluded.port,
 			   username=excluded.username, password=excluded.password,
+			   subscription_id=excluded.subscription_id,
 			   region=excluded.region, country=excluded.country,
 			   updated_at=excluded.updated_at`)
 		if err != nil {
@@ -251,7 +256,7 @@ func (s *sqliteStore) BulkUpsertNodes(ctx context.Context, nodes []Node) error {
 			}
 			result, err := stmt.ExecContext(ctx,
 				n.URI, n.Name, n.Source, n.Port,
-				n.Username, n.Password, n.Region, n.Country,
+				n.Username, n.Password, n.SubscriptionID, n.Region, n.Country,
 				enabled, now, now,
 			)
 			if err != nil {
@@ -292,6 +297,10 @@ func (s *sqliteStore) CountNodes(ctx context.Context, filter NodeFilter) (int64,
 	if filter.Source != "" {
 		conditions = append(conditions, "source = ?")
 		args = append(args, filter.Source)
+	}
+	if filter.SubscriptionID > 0 {
+		conditions = append(conditions, "subscription_id = ?")
+		args = append(args, filter.SubscriptionID)
 	}
 	if filter.Region != "" {
 		conditions = append(conditions, "region = ?")
@@ -784,6 +793,102 @@ func (s *sqliteStore) ListSubscriptionSources(ctx context.Context) ([]Subscripti
 	return sources, rows.Err()
 }
 
+func (s *sqliteStore) GetSubscriptionSource(ctx context.Context, id int64) (*SubscriptionSource, error) {
+	row := s.conn().QueryRowContext(ctx,
+		`SELECT id, name, url, enabled, auto_update, interval, last_refresh, next_refresh,
+		 node_count, last_error, created_at, updated_at
+		 FROM subscription_sources WHERE id = ?`, id)
+	return scanSubscriptionSource(row)
+}
+
+func (s *sqliteStore) CreateSubscriptionSource(ctx context.Context, source *SubscriptionSource) error {
+	if source == nil {
+		return fmt.Errorf("subscription source is nil")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	name := strings.TrimSpace(source.Name)
+	url := strings.TrimSpace(source.URL)
+	if url == "" {
+		return fmt.Errorf("subscription url is empty")
+	}
+	interval := source.Interval
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	result, err := s.conn().ExecContext(ctx,
+		`INSERT INTO subscription_sources
+		 (name, url, enabled, auto_update, interval, last_refresh, next_refresh,
+		  node_count, last_error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		name, url, boolToInt(source.Enabled), boolToInt(source.AutoUpdate), int64(interval),
+		formatTime(source.LastRefresh), formatTime(source.NextRefresh),
+		source.NodeCount, source.LastError, now, now,
+	)
+	if err != nil {
+		return fmt.Errorf("create subscription source: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("get subscription source id: %w", err)
+	}
+	source.ID = id
+	source.Name = name
+	source.URL = url
+	source.Interval = interval
+	source.CreatedAt = parseTime(now)
+	source.UpdatedAt = parseTime(now)
+	return nil
+}
+
+func (s *sqliteStore) UpdateSubscriptionSource(ctx context.Context, source *SubscriptionSource) error {
+	if source == nil {
+		return fmt.Errorf("subscription source is nil")
+	}
+	if source.ID <= 0 {
+		return fmt.Errorf("subscription source id is required")
+	}
+	url := strings.TrimSpace(source.URL)
+	if url == "" {
+		return fmt.Errorf("subscription url is empty")
+	}
+	interval := source.Interval
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.conn().ExecContext(ctx,
+		`UPDATE subscription_sources
+		 SET name=?, url=?, enabled=?, auto_update=?, interval=?,
+		     last_refresh=?, next_refresh=?, node_count=?, last_error=?, updated_at=?
+		 WHERE id=?`,
+		strings.TrimSpace(source.Name), url, boolToInt(source.Enabled), boolToInt(source.AutoUpdate), int64(interval),
+		formatTime(source.LastRefresh), formatTime(source.NextRefresh), source.NodeCount, source.LastError, now, source.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("update subscription source %d: %w", source.ID, err)
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("subscription source %d not found", source.ID)
+	}
+	source.URL = url
+	source.Interval = interval
+	source.UpdatedAt = parseTime(now)
+	return nil
+}
+
+func (s *sqliteStore) DeleteSubscriptionSource(ctx context.Context, id int64) error {
+	result, err := s.conn().ExecContext(ctx, "DELETE FROM subscription_sources WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete subscription source %d: %w", id, err)
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("subscription source %d not found", id)
+	}
+	return nil
+}
+
 func (s *sqliteStore) ReplaceSubscriptionSources(ctx context.Context, sources []SubscriptionSource) error {
 	execFn := func(txStore *sqliteStore) error {
 		if _, err := txStore.conn().ExecContext(ctx, "DELETE FROM subscription_sources"); err != nil {
@@ -874,7 +979,7 @@ func scanNode(row *sql.Row) (*Node, error) {
 
 	err := row.Scan(
 		&n.ID, &n.URI, &n.Name, &n.Source, &n.Port,
-		&n.Username, &n.Password, &n.Region, &n.Country,
+		&n.Username, &n.Password, &n.SubscriptionID, &n.Region, &n.Country,
 		&enabled, &createdAtStr, &updatedAtStr,
 	)
 	if err == sql.ErrNoRows {
@@ -899,7 +1004,7 @@ func scanNodes(rows *sql.Rows) ([]Node, error) {
 
 		err := rows.Scan(
 			&n.ID, &n.URI, &n.Name, &n.Source, &n.Port,
-			&n.Username, &n.Password, &n.Region, &n.Country,
+			&n.Username, &n.Password, &n.SubscriptionID, &n.Region, &n.Country,
 			&enabled, &createdAtStr, &updatedAtStr,
 		)
 		if err != nil {
@@ -912,6 +1017,32 @@ func scanNodes(rows *sql.Rows) ([]Node, error) {
 		nodes = append(nodes, n)
 	}
 	return nodes, rows.Err()
+}
+
+func scanSubscriptionSource(row *sql.Row) (*SubscriptionSource, error) {
+	var src SubscriptionSource
+	var enabled, autoUpdate int
+	var intervalNanos int64
+	var lastRefreshStr, nextRefreshStr, createdAtStr, updatedAtStr string
+	err := row.Scan(
+		&src.ID, &src.Name, &src.URL, &enabled, &autoUpdate, &intervalNanos,
+		&lastRefreshStr, &nextRefreshStr, &src.NodeCount, &src.LastError,
+		&createdAtStr, &updatedAtStr,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan subscription source: %w", err)
+	}
+	src.Enabled = enabled != 0
+	src.AutoUpdate = autoUpdate != 0
+	src.Interval = time.Duration(intervalNanos)
+	src.LastRefresh = parseTime(lastRefreshStr)
+	src.NextRefresh = parseTime(nextRefreshStr)
+	src.CreatedAt = parseTime(createdAtStr)
+	src.UpdatedAt = parseTime(updatedAtStr)
+	return &src, nil
 }
 
 func parseTime(s string) time.Time {

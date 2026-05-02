@@ -135,6 +135,14 @@ CREATE INDEX IF NOT EXISTS idx_subscription_sources_enabled ON subscription_sour
 CREATE INDEX IF NOT EXISTS idx_subscription_sources_auto_update ON subscription_sources(auto_update);
 `,
 		},
+		{
+			Version:     4,
+			Description: "link nodes to subscription sources",
+			Up: `
+ALTER TABLE nodes ADD COLUMN subscription_id INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_nodes_subscription_id ON nodes(subscription_id);
+`,
+		},
 	}
 }
 

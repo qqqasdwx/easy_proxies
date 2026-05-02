@@ -58,6 +58,11 @@ type Manager struct {
 	nodesHash     string
 }
 
+type fetchedSourceNodes struct {
+	source store.SubscriptionSource
+	nodes  []config.NodeConfig
+}
+
 // New creates a SubscriptionManager.
 func New(cfg *config.Config, boxMgr *boxmgr.Manager, opts ...Option) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -107,7 +112,12 @@ func (m *Manager) Start() {
 		m.logger.Infof("subscription refresh disabled")
 		return
 	}
-	if len(m.subscriptionURLs()) == 0 {
+	sources, err := m.subscriptionSources()
+	if err != nil {
+		m.logger.Warnf("failed to load subscription sources: %v", err)
+		return
+	}
+	if len(sources) == 0 {
 		m.logger.Infof("no subscriptions configured, refresh disabled")
 		return
 	}
@@ -116,6 +126,57 @@ func (m *Manager) Start() {
 	m.logger.Infof("starting subscription refresh, interval: %s", interval)
 
 	go m.refreshLoop(interval)
+}
+
+// RefreshSource refreshes one subscription source and reloads the proxy config.
+func (m *Manager) RefreshSource(id int64) error {
+	if m.store == nil {
+		return fmt.Errorf("database store is required")
+	}
+	source, err := m.store.GetSubscriptionSource(context.Background(), id)
+	if err != nil {
+		return err
+	}
+	if source == nil {
+		return fmt.Errorf("subscription source %d not found", id)
+	}
+	if strings.TrimSpace(source.URL) == "" {
+		return fmt.Errorf("subscription source %d has empty url", id)
+	}
+
+	timeout := m.baseCfg.SubscriptionRefresh.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	nodes, err := m.fetchSubscription(source.URL, timeout)
+	if err != nil {
+		m.updateSourceStatus(context.Background(), *source, 0, err)
+		return err
+	}
+	for idx := range nodes {
+		nodes[idx].Source = config.NodeSourceSubscription
+	}
+	if err := m.persistSubscriptionNodes(context.Background(), source.ID, nodes); err != nil {
+		return err
+	}
+	m.updateSourceStatus(context.Background(), *source, len(nodes), nil)
+
+	portMap := m.boxMgr.CurrentPortMap()
+	newCfg := m.createNewConfig(nodes)
+	if err := m.boxMgr.ReloadWithPortMap(newCfg, portMap); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	m.status.LastRefresh = time.Now()
+	m.status.NodeCount = len(nodes)
+	m.status.LastError = ""
+	m.status.RefreshCount++
+	status := m.status
+	hash := m.nodesHash
+	m.mu.Unlock()
+	m.persistStatus(context.Background(), status, hash)
+	return nil
 }
 
 // Stop stops the periodic refresh.
@@ -345,8 +406,7 @@ func (m *Manager) doRefresh() {
 
 	m.logger.Infof("starting subscription refresh")
 
-	// Fetch nodes from all subscriptions
-	nodes, err := m.fetchAllSubscriptions()
+	groups, nodes, err := m.fetchAllSubscriptions()
 	if err != nil {
 		m.logger.Errorf("fetch subscriptions failed: %v", err)
 		m.mu.Lock()
@@ -372,13 +432,19 @@ func (m *Manager) doRefresh() {
 	}
 
 	newHash := m.computeNodesHash(nodes)
-	if err := m.persistSubscriptionNodes(context.Background(), nodes); err != nil {
-		m.logger.Errorf("persist subscription nodes failed: %v", err)
-		m.mu.Lock()
-		m.status.LastError = err.Error()
-		m.status.LastRefresh = time.Now()
-		m.mu.Unlock()
-		return
+	for _, group := range groups {
+		for idx := range group.nodes {
+			group.nodes[idx].Source = config.NodeSourceSubscription
+		}
+		if err := m.persistSubscriptionNodes(context.Background(), group.source.ID, group.nodes); err != nil {
+			m.logger.Errorf("persist subscription nodes failed: %v", err)
+			m.mu.Lock()
+			m.status.LastError = err.Error()
+			m.status.LastRefresh = time.Now()
+			m.mu.Unlock()
+			return
+		}
+		m.updateSourceStatus(context.Background(), group.source, len(group.nodes), nil)
 	}
 	m.mu.Lock()
 	m.nodesHash = newHash
@@ -457,7 +523,29 @@ func (m *Manager) persistStatus(ctx context.Context, status monitor.Subscription
 	}
 }
 
-func (m *Manager) persistSubscriptionNodes(ctx context.Context, nodes []config.NodeConfig) error {
+func (m *Manager) updateSourceStatus(ctx context.Context, source store.SubscriptionSource, nodeCount int, refreshErr error) {
+	if m.store == nil || source.ID <= 0 {
+		return
+	}
+	now := time.Now()
+	source.LastRefresh = now
+	source.NodeCount = nodeCount
+	if source.AutoUpdate && source.Interval > 0 {
+		source.NextRefresh = now.Add(source.Interval)
+	} else {
+		source.NextRefresh = time.Time{}
+	}
+	if refreshErr != nil {
+		source.LastError = refreshErr.Error()
+	} else {
+		source.LastError = ""
+	}
+	if err := m.store.UpdateSubscriptionSource(ctx, &source); err != nil {
+		m.logger.Warnf("failed to update subscription source status: %v", err)
+	}
+}
+
+func (m *Manager) persistSubscriptionNodes(ctx context.Context, sourceID int64, nodes []config.NodeConfig) error {
 	if m.store == nil {
 		return nil
 	}
@@ -465,7 +553,10 @@ func (m *Manager) persistSubscriptionNodes(ctx context.Context, nodes []config.N
 		ctx = context.Background()
 	}
 	return m.store.WithTx(ctx, func(tx store.Store) error {
-		existing, err := tx.ListNodes(ctx, store.NodeFilter{Source: store.NodeSourceSubscription})
+		existing, err := tx.ListNodes(ctx, store.NodeFilter{
+			Source:         store.NodeSourceSubscription,
+			SubscriptionID: sourceID,
+		})
 		if err != nil {
 			return fmt.Errorf("list subscription nodes: %w", err)
 		}
@@ -483,13 +574,14 @@ func (m *Manager) persistSubscriptionNodes(ctx context.Context, nodes []config.N
 			}
 			nextURIs[node.URI] = struct{}{}
 			upserts = append(upserts, store.Node{
-				URI:      node.URI,
-				Name:     node.Name,
-				Source:   store.NodeSourceSubscription,
-				Port:     node.Port,
-				Username: node.Username,
-				Password: node.Password,
-				Enabled:  enabled,
+				URI:            node.URI,
+				Name:           node.Name,
+				Source:         store.NodeSourceSubscription,
+				Port:           node.Port,
+				Username:       node.Username,
+				Password:       node.Password,
+				SubscriptionID: sourceID,
+				Enabled:        enabled,
 			})
 		}
 		for _, node := range existing {
@@ -508,7 +600,8 @@ func (m *Manager) persistSubscriptionNodes(ctx context.Context, nodes []config.N
 }
 
 // fetchAllSubscriptions fetches nodes from all configured subscription URLs.
-func (m *Manager) fetchAllSubscriptions() ([]config.NodeConfig, error) {
+func (m *Manager) fetchAllSubscriptions() ([]fetchedSourceNodes, []config.NodeConfig, error) {
+	var groups []fetchedSourceNodes
 	var allNodes []config.NodeConfig
 	var lastErr error
 
@@ -517,43 +610,62 @@ func (m *Manager) fetchAllSubscriptions() ([]config.NodeConfig, error) {
 		timeout = 30 * time.Second
 	}
 
-	for _, subURL := range m.subscriptionURLs() {
-		nodes, err := m.fetchSubscription(subURL, timeout)
+	sources, err := m.subscriptionSources()
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, source := range sources {
+		nodes, err := m.fetchSubscription(source.URL, timeout)
 		if err != nil {
-			m.logger.Warnf("failed to fetch %s: %v", subURL, err)
+			m.logger.Warnf("failed to fetch %s: %v", source.URL, err)
+			m.updateSourceStatus(context.Background(), source, 0, err)
 			lastErr = err
 			continue
 		}
 		m.logger.Infof("fetched %d nodes from subscription", len(nodes))
+		groups = append(groups, fetchedSourceNodes{source: source, nodes: nodes})
 		allNodes = append(allNodes, nodes...)
 	}
 
 	if len(allNodes) == 0 && lastErr != nil {
-		return nil, lastErr
+		return nil, nil, lastErr
 	}
 
-	return allNodes, nil
+	return groups, allNodes, nil
 }
 
-func (m *Manager) subscriptionURLs() []string {
-	m.mu.RLock()
-	urls := append([]string(nil), m.urls...)
-	m.mu.RUnlock()
+func (m *Manager) subscriptionSources() ([]store.SubscriptionSource, error) {
 	if m.store == nil {
-		return urls
+		m.mu.RLock()
+		urls := append([]string(nil), m.urls...)
+		m.mu.RUnlock()
+		sources := make([]store.SubscriptionSource, 0, len(urls))
+		for idx, u := range urls {
+			if strings.TrimSpace(u) == "" {
+				continue
+			}
+			sources = append(sources, store.SubscriptionSource{
+				ID:         int64(idx + 1),
+				Name:       fmt.Sprintf("subscription-%d", idx+1),
+				URL:        u,
+				Enabled:    true,
+				AutoUpdate: true,
+				Interval:   m.baseCfg.SubscriptionRefresh.Interval,
+			})
+		}
+		return sources, nil
 	}
 	sources, err := m.store.ListSubscriptionSources(context.Background())
 	if err != nil {
-		m.logger.Warnf("failed to load subscription sources: %v", err)
-		return urls
+		return nil, err
 	}
-	urls = urls[:0]
+	filtered := sources[:0]
 	for _, source := range sources {
 		if source.Enabled && source.URL != "" {
-			urls = append(urls, source.URL)
+			filtered = append(filtered, source)
 		}
 	}
-	return urls
+	return filtered, nil
 }
 
 // fetchSubscription fetches and parses a single subscription URL.

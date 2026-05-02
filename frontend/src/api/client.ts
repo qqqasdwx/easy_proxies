@@ -9,6 +9,8 @@ import type {
   ConfigNodePayload,
   ConfigNodeMutationResponse,
   SubscriptionStatus,
+  SubscriptionSource,
+  SubscriptionSourcePayload,
   ProbeSSEEvent,
   TrafficStreamEvent,
 } from '../types'
@@ -126,7 +128,6 @@ interface RawSettings {
     drain_timeout?: string
     min_available_nodes?: number
   }
-  subscriptions?: string[]
   geoip?: {
     enabled?: boolean
     database_path?: string
@@ -136,7 +137,6 @@ interface RawSettings {
 }
 
 interface SubscriptionConfigResponse {
-  subscriptions?: string[]
   enabled?: boolean
   interval?: string
   timeout?: string
@@ -390,7 +390,6 @@ export async function updateSettings(settings: SettingsData): Promise<SettingsUp
   const sub = await request<{ message?: string }>('/api/subscription/config', {
     method: 'PUT',
     body: JSON.stringify({
-      subscriptions: settings.subscriptions,
       enabled: settings.sub_refresh_enabled,
       interval: settings.sub_refresh_interval,
       timeout: settings.sub_refresh_timeout,
@@ -448,7 +447,6 @@ function normalizeSettings(raw: RawSettings, sub: SubscriptionConfigResponse): S
     geoip_auto_update_enabled: raw.geoip?.auto_update_enabled ?? true,
     geoip_auto_update_interval: raw.geoip?.auto_update_interval || '24h0m0s',
 
-    subscriptions: sub.subscriptions || raw.subscriptions || [],
   }
 }
 
@@ -513,6 +511,32 @@ export async function fetchSubscriptionStatus(): Promise<SubscriptionStatus> {
 
 export async function refreshSubscription(): Promise<{ message: string; node_count: number }> {
   return request('/api/subscription/refresh', { method: 'POST' })
+}
+
+export async function fetchSubscriptions(): Promise<{ subscriptions: SubscriptionSource[] }> {
+  return request('/api/subscriptions')
+}
+
+export async function createSubscription(payload: SubscriptionSourcePayload): Promise<{ subscription: SubscriptionSource; message: string }> {
+  return request('/api/subscriptions', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateSubscription(id: number, payload: SubscriptionSourcePayload): Promise<{ subscription: SubscriptionSource; message: string }> {
+  return request(`/api/subscriptions/${encodeURIComponent(String(id))}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteSubscription(id: number): Promise<{ message: string }> {
+  return request(`/api/subscriptions/${encodeURIComponent(String(id))}`, { method: 'DELETE' })
+}
+
+export async function refreshSubscriptionSource(id: number): Promise<{ message: string; subscription?: SubscriptionSource }> {
+  return request(`/api/subscriptions/${encodeURIComponent(String(id))}/refresh`, { method: 'POST' })
 }
 
 // ---- Export API ----

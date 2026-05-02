@@ -4,12 +4,13 @@ import ManagePanel from './components/ManagePanel'
 import DebugPanel from './components/DebugPanel'
 import LogsPanel from './components/LogsPanel'
 import SettingsPanel from './components/SettingsPanel'
+import SubscriptionsPanel from './components/SubscriptionsPanel'
 import LoginPage from './components/LoginPage'
 import { checkAuth, getToken, logout } from './api/client'
 import packageJson from '../package.json'
 
 type AuthState = 'loading' | 'need_login' | 'authenticated'
-type TabId = 'monitor' | 'manage' | 'debug' | 'logs' | 'settings'
+type TabId = 'monitor' | 'manage' | 'subscriptions' | 'debug' | 'logs' | 'settings'
 
 const ALL_THEMES = [
   'light', 'dark', 'cupcake', 'bumblebee', 'emerald', 'corporate',
@@ -42,6 +43,16 @@ const MENU_ITEMS: { id: TabId; label: string; icon: React.ReactNode; desc: strin
     ),
   },
   {
+    id: 'subscriptions',
+    label: '订阅管理',
+    desc: '来源与刷新',
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+      </svg>
+    ),
+  },
+  {
     id: 'debug',
     label: '调试面板',
     desc: '运行时信息',
@@ -64,7 +75,7 @@ const MENU_ITEMS: { id: TabId; label: string; icon: React.ReactNode; desc: strin
   {
     id: 'settings',
     label: '系统设置',
-    desc: '配置与订阅',
+    desc: '运行参数',
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -74,7 +85,7 @@ const MENU_ITEMS: { id: TabId; label: string; icon: React.ReactNode; desc: strin
   },
 ]
 
-const VALID_TABS: TabId[] = ['monitor', 'manage', 'debug', 'logs', 'settings']
+const VALID_TABS: TabId[] = ['monitor', 'manage', 'subscriptions', 'debug', 'logs', 'settings']
 const THEME_STORAGE_KEY = 'ep-theme'
 
 const APP_VERSION = `v${packageJson.version}`
@@ -184,6 +195,7 @@ function App() {
     switch (activeTab) {
       case 'monitor': return <MonitorPanel />
       case 'manage': return <ManagePanel />
+      case 'subscriptions': return <SubscriptionsPanel />
       case 'debug': return <DebugPanel />
       case 'logs': return <LogsPanel />
       case 'settings': return <SettingsPanel />

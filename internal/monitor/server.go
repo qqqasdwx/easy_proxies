@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,7 @@ var (
 // SubscriptionRefresher interface for subscription manager.
 type SubscriptionRefresher interface {
 	RefreshNow() error
+	RefreshSource(id int64) error
 	Status() SubscriptionStatus
 	UpdateConfig(urls []string, enabled bool, interval time.Duration)
 	UpdateConfigAndRefresh(urls []string, enabled bool, interval time.Duration) error
@@ -125,6 +127,8 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/subscription/status", s.withAuth(s.handleSubscriptionStatus))
 	mux.HandleFunc("/api/subscription/refresh", s.withAuth(s.handleSubscriptionRefresh))
 	mux.HandleFunc("/api/subscription/config", s.withAuth(s.handleSubscriptionConfig))
+	mux.HandleFunc("/api/subscriptions", s.withAuth(s.handleSubscriptions))
+	mux.HandleFunc("/api/subscriptions/", s.withAuth(s.handleSubscriptionItem))
 	mux.HandleFunc("/api/reload", s.withAuth(s.handleReload))
 	mux.HandleFunc("/api/traffic", s.withAuth(s.handleTraffic))
 	mux.HandleFunc("/api/logs", s.withAuth(s.handleLogs))
@@ -1296,15 +1300,15 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 
 	case http.MethodPut:
 		var req struct {
-			URLs                []string `json:"subscriptions"`
-			Enabled             bool     `json:"enabled"`
-			Interval            string   `json:"interval"` // e.g. "1h", "30m"
-			Timeout             string   `json:"timeout"`
-			HealthCheckTimeout  string   `json:"health_check_timeout"`
-			DrainTimeout        string   `json:"drain_timeout"`
-			MinAvailableNodes   int      `json:"min_available_nodes"`
-			AutoRefreshEnabled  *bool    `json:"auto_refresh_enabled,omitempty"`
-			AutoRefreshInterval string   `json:"auto_refresh_interval,omitempty"`
+			URLs                *[]string `json:"subscriptions,omitempty"`
+			Enabled             bool      `json:"enabled"`
+			Interval            string    `json:"interval"` // e.g. "1h", "30m"
+			Timeout             string    `json:"timeout"`
+			HealthCheckTimeout  string    `json:"health_check_timeout"`
+			DrainTimeout        string    `json:"drain_timeout"`
+			MinAvailableNodes   int       `json:"min_available_nodes"`
+			AutoRefreshEnabled  *bool     `json:"auto_refresh_enabled,omitempty"`
+			AutoRefreshInterval string    `json:"auto_refresh_interval,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -1331,10 +1335,12 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 
 		// Clean URLs
 		var cleanURLs []string
-		for _, u := range req.URLs {
-			u = strings.TrimSpace(u)
-			if u != "" {
-				cleanURLs = append(cleanURLs, u)
+		if req.URLs != nil {
+			for _, u := range *req.URLs {
+				u = strings.TrimSpace(u)
+				if u != "" {
+					cleanURLs = append(cleanURLs, u)
+				}
 			}
 		}
 
@@ -1360,7 +1366,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		s.cfgMu.Lock()
 		var refreshNeeded bool
 		if s.cfgSrc != nil {
-			refreshNeeded = !sameStringSlice(currentURLs, cleanURLs) ||
+			refreshNeeded = (req.URLs != nil && !sameStringSlice(currentURLs, cleanURLs)) ||
 				s.cfgSrc.SubscriptionRefresh.Enabled != enabled ||
 				s.cfgSrc.SubscriptionRefresh.Interval != interval
 			s.cfgSrc.SubscriptionRefresh.Enabled = enabled
@@ -1371,21 +1377,23 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			if req.MinAvailableNodes > 0 {
 				s.cfgSrc.SubscriptionRefresh.MinAvailableNodes = req.MinAvailableNodes
 			}
-			nextSources := make([]store.SubscriptionSource, 0, len(cleanURLs))
-			for idx, u := range cleanURLs {
-				nextSources = append(nextSources, store.SubscriptionSource{
-					Name:       fmt.Sprintf("subscription-%d", idx+1),
-					URL:        u,
-					Enabled:    true,
-					AutoUpdate: enabled,
-					Interval:   interval,
-				})
-			}
-			if err := s.store.ReplaceSubscriptionSources(r.Context(), nextSources); err != nil {
-				s.cfgMu.Unlock()
-				w.WriteHeader(http.StatusInternalServerError)
-				writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
-				return
+			if req.URLs != nil {
+				nextSources := make([]store.SubscriptionSource, 0, len(cleanURLs))
+				for idx, u := range cleanURLs {
+					nextSources = append(nextSources, store.SubscriptionSource{
+						Name:       fmt.Sprintf("subscription-%d", idx+1),
+						URL:        u,
+						Enabled:    true,
+						AutoUpdate: enabled,
+						Interval:   interval,
+					})
+				}
+				if err := s.store.ReplaceSubscriptionSources(r.Context(), nextSources); err != nil {
+					s.cfgMu.Unlock()
+					w.WriteHeader(http.StatusInternalServerError)
+					writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
+					return
+				}
 			}
 			if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {
 				s.cfgMu.Unlock()
@@ -1432,6 +1440,220 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+type subscriptionSourcePayload struct {
+	Name       string `json:"name"`
+	URL        string `json:"url"`
+	Enabled    *bool  `json:"enabled,omitempty"`
+	AutoUpdate *bool  `json:"auto_update,omitempty"`
+	Interval   string `json:"interval"`
+}
+
+func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		writeJSON(w, map[string]any{"error": "数据库存储未初始化"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		sources, err := s.store.ListSubscriptionSources(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("读取订阅失败: %v", err)})
+			return
+		}
+		resp := make([]map[string]any, 0, len(sources))
+		for _, source := range sources {
+			resp = append(resp, subscriptionSourceResponse(source))
+		}
+		writeJSON(w, map[string]any{"subscriptions": resp})
+
+	case http.MethodPost:
+		var payload subscriptionSourcePayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "请求格式错误"})
+			return
+		}
+		source, err := sourceFromPayload(payload, nil)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		if err := s.store.CreateSubscriptionSource(r.Context(), &source); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
+			return
+		}
+		writeJSON(w, map[string]any{"subscription": subscriptionSourceResponse(source), "message": "订阅已添加"})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		writeJSON(w, map[string]any{"error": "数据库存储未初始化"})
+		return
+	}
+
+	id, action, ok := parseSubscriptionItemPath(r.URL.Path)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(w, map[string]any{"error": "订阅不存在"})
+		return
+	}
+
+	switch {
+	case action == "refresh" && r.Method == http.MethodPost:
+		if s.subRefresher == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			writeJSON(w, map[string]any{"error": "订阅刷新未启用"})
+			return
+		}
+		if err := s.subRefresher.RefreshSource(id); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		source, _ := s.store.GetSubscriptionSource(r.Context(), id)
+		resp := map[string]any{"message": "订阅刷新成功"}
+		if source != nil {
+			resp["subscription"] = subscriptionSourceResponse(*source)
+		}
+		writeJSON(w, resp)
+
+	case action == "" && r.Method == http.MethodPut:
+		current, err := s.store.GetSubscriptionSource(r.Context(), id)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("读取订阅失败: %v", err)})
+			return
+		}
+		if current == nil {
+			w.WriteHeader(http.StatusNotFound)
+			writeJSON(w, map[string]any{"error": "订阅不存在"})
+			return
+		}
+		var payload subscriptionSourcePayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "请求格式错误"})
+			return
+		}
+		next, err := sourceFromPayload(payload, current)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		if err := s.store.UpdateSubscriptionSource(r.Context(), &next); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
+			return
+		}
+		if current.URL != next.URL {
+			_ = s.deleteSubscriptionNodes(r.Context(), id)
+		}
+		writeJSON(w, map[string]any{"subscription": subscriptionSourceResponse(next), "message": "订阅已保存"})
+
+	case action == "" && r.Method == http.MethodDelete:
+		if err := s.store.DeleteSubscriptionSource(r.Context(), id); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("删除订阅失败: %v", err)})
+			return
+		}
+		if err := s.deleteSubscriptionNodes(r.Context(), id); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("删除订阅节点失败: %v", err)})
+			return
+		}
+		if s.nodeMgr != nil {
+			_ = s.nodeMgr.TriggerReload(r.Context())
+		}
+		writeJSON(w, map[string]any{"message": "订阅已删除"})
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func parseSubscriptionItemPath(path string) (int64, string, bool) {
+	rest := strings.TrimPrefix(path, "/api/subscriptions/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		return 0, "", false
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id <= 0 {
+		return 0, "", false
+	}
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+	return id, action, len(parts) <= 2
+}
+
+func sourceFromPayload(payload subscriptionSourcePayload, current *store.SubscriptionSource) (store.SubscriptionSource, error) {
+	source := store.SubscriptionSource{Enabled: true, AutoUpdate: true, Interval: time.Hour}
+	if current != nil {
+		source = *current
+	}
+	source.Name = strings.TrimSpace(payload.Name)
+	source.URL = strings.TrimSpace(payload.URL)
+	if source.URL == "" {
+		return source, errors.New("订阅 URL 不能为空")
+	}
+	if payload.Enabled != nil {
+		source.Enabled = *payload.Enabled
+	}
+	if payload.AutoUpdate != nil {
+		source.AutoUpdate = *payload.AutoUpdate
+	}
+	if strings.TrimSpace(payload.Interval) != "" {
+		interval, err := time.ParseDuration(payload.Interval)
+		if err != nil || interval < time.Minute {
+			return source, errors.New("刷新间隔格式错误，最小 1 分钟")
+		}
+		source.Interval = interval
+	}
+	return source, nil
+}
+
+func subscriptionSourceResponse(source store.SubscriptionSource) map[string]any {
+	return map[string]any{
+		"id":           source.ID,
+		"name":         source.Name,
+		"url":          source.URL,
+		"enabled":      source.Enabled,
+		"auto_update":  source.AutoUpdate,
+		"interval":     source.Interval.String(),
+		"last_refresh": source.LastRefresh,
+		"next_refresh": source.NextRefresh,
+		"node_count":   source.NodeCount,
+		"last_error":   source.LastError,
+		"created_at":   source.CreatedAt,
+		"updated_at":   source.UpdatedAt,
+	}
+}
+
+func (s *Server) deleteSubscriptionNodes(ctx context.Context, sourceID int64) error {
+	nodes, err := s.store.ListNodes(ctx, store.NodeFilter{Source: store.NodeSourceSubscription, SubscriptionID: sourceID})
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		if err := s.store.DeleteNode(ctx, node.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // nodePayload is the JSON request body for node CRUD operations.

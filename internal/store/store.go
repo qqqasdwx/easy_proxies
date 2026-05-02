@@ -119,6 +119,18 @@ type Store interface {
 	// ListSubscriptionSources returns all configured subscription sources.
 	ListSubscriptionSources(ctx context.Context) ([]SubscriptionSource, error)
 
+	// GetSubscriptionSource returns a subscription source by ID.
+	GetSubscriptionSource(ctx context.Context, id int64) (*SubscriptionSource, error)
+
+	// CreateSubscriptionSource inserts a subscription source and returns its assigned ID.
+	CreateSubscriptionSource(ctx context.Context, source *SubscriptionSource) error
+
+	// UpdateSubscriptionSource updates an existing subscription source.
+	UpdateSubscriptionSource(ctx context.Context, source *SubscriptionSource) error
+
+	// DeleteSubscriptionSource removes a subscription source by ID.
+	DeleteSubscriptionSource(ctx context.Context, id int64) error
+
 	// ReplaceSubscriptionSources atomically replaces the configured subscription sources.
 	ReplaceSubscriptionSources(ctx context.Context, sources []SubscriptionSource) error
 
@@ -136,27 +148,29 @@ type Store interface {
 
 // Node represents a proxy node stored in the database.
 type Node struct {
-	ID        int64     `json:"id"`
-	URI       string    `json:"uri"`
-	Name      string    `json:"name"`
-	Source    string    `json:"source"` // manual or subscription
-	Port      uint16    `json:"port"`
-	Username  string    `json:"username,omitempty"`
-	Password  string    `json:"password,omitempty"`
-	Region    string    `json:"region,omitempty"`
-	Country   string    `json:"country,omitempty"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID             int64     `json:"id"`
+	URI            string    `json:"uri"`
+	Name           string    `json:"name"`
+	Source         string    `json:"source"` // manual or subscription
+	Port           uint16    `json:"port"`
+	Username       string    `json:"username,omitempty"`
+	Password       string    `json:"password,omitempty"`
+	SubscriptionID int64     `json:"subscription_id,omitempty"`
+	Region         string    `json:"region,omitempty"`
+	Country        string    `json:"country,omitempty"`
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // NodeFilter specifies criteria for listing nodes.
 type NodeFilter struct {
-	Source  string // Filter by source (empty = all)
-	Region  string // Filter by region (empty = all)
-	Enabled *bool  // Filter by enabled status (nil = all)
-	Limit   int    // Max results (0 = no limit)
-	Offset  int    // Pagination offset
+	Source         string // Filter by source (empty = all)
+	SubscriptionID int64  // Filter by subscription source ID (0 = all)
+	Region         string // Filter by region (empty = all)
+	Enabled        *bool  // Filter by enabled status (nil = all)
+	Limit          int    // Max results (0 = no limit)
+	Offset         int    // Pagination offset
 }
 
 // NodeStats holds runtime statistics for a node.
