@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ConfigNodePayload } from '../types'
+import { parseNodeURI } from '../api/client'
 
 type EditorTab = 'form' | 'json' | 'inbound'
 
@@ -198,6 +199,25 @@ function isV2RayLike(type: string) {
   return type === 'vmess' || type === 'vless' || type === 'trojan'
 }
 
+function isSupportedURI(value: string) {
+  const lower = value.trim().toLowerCase()
+  return [
+    'vmess://',
+    'vless://',
+    'trojan://',
+    'ss://',
+    'shadowsocks://',
+    'hysteria2://',
+    'hy2://',
+    'tuic://',
+    'socks5://',
+    'socks://',
+    'http://',
+    'https://',
+    'anytls://',
+  ].some(prefix => lower.startsWith(prefix))
+}
+
 interface Props {
   open: boolean
   editingName: string | null
@@ -223,16 +243,62 @@ export default function NodeEditorModal({
 }: Props) {
   const [tab, setTab] = useState<EditorTab>('form')
   const [jsonError, setJsonError] = useState('')
+  const [uriError, setUriError] = useState('')
+  const [uriParsing, setUriParsing] = useState(false)
   const [outboundForm, setOutboundForm] = useState<OutboundForm>(defaultOutboundForm)
 
   useEffect(() => {
     if (!open) return
     setTab('form')
     setJsonError('')
+    setUriError('')
+    setUriParsing(false)
     setOutboundForm(parseOutboundForm(form.outbound_json || '') || defaultOutboundForm)
   }, [open, editingName])
 
   const jsonPreview = useMemo(() => form.outbound_json || '', [form.outbound_json])
+
+  useEffect(() => {
+    if (!open || readOnly) return
+    const uri = form.uri.trim()
+    if (!uri) {
+      setUriError('')
+      return
+    }
+    if (!isSupportedURI(uri)) {
+      setUriError(uri.includes('://') ? '不支持的代理 URI' : '')
+      return
+    }
+
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      setUriParsing(true)
+      try {
+        const parsed = await parseNodeURI(uri, form.name)
+        if (cancelled) return
+        const nextName = form.name.trim() ? form.name : parsed.name
+        const nextForm = {
+          ...form,
+          name: nextName,
+          uri: parsed.uri,
+          outbound_json: parsed.outbound_json,
+        }
+        onChange(nextForm)
+        setOutboundForm(parseOutboundForm(parsed.outbound_json) || defaultOutboundForm)
+        setJsonError('')
+        setUriError('')
+      } catch (err) {
+        if (!cancelled) setUriError(err instanceof Error ? err.message : 'URI 解析失败')
+      } finally {
+        if (!cancelled) setUriParsing(false)
+      }
+    }, 500)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [open, readOnly, form.uri, form.name])
 
   if (!open) return null
 
@@ -263,6 +329,7 @@ export default function NodeEditorModal({
         <form onSubmit={onSubmit}>
           {formError && <div className="alert alert-error mb-3 py-2 text-sm"><span>{formError}</span></div>}
           {jsonError && tab === 'json' && <div className="alert alert-warning mb-3 py-2 text-sm"><span>{jsonError}</span></div>}
+          {uriError && tab === 'json' && <div className="alert alert-warning mb-3 py-2 text-sm"><span>{uriError}</span></div>}
 
           <div role="tablist" className="tabs tabs-boxed mb-4 bg-base-200/70">
             <button type="button" role="tab" className={`tab ${tab === 'form' ? 'tab-active' : ''}`} onClick={() => setTab('form')}>Form</button>
@@ -407,21 +474,32 @@ export default function NodeEditorModal({
                   <input className="input input-sm w-full" value={outboundForm.congestion_control} disabled={readOnly} onChange={(e) => updateOutboundForm({ congestion_control: e.target.value })} />
                 </fieldset>
               )}
-              <fieldset className="fieldset md:col-span-2">
-                <legend className="fieldset-legend">URI</legend>
-                <input className="input input-sm w-full font-mono text-xs" value={form.uri} disabled={readOnly} onChange={(e) => onChange({ ...form, uri: e.target.value })} />
-              </fieldset>
             </div>
           )}
 
           {tab === 'json' && (
-            <textarea
-              className="textarea textarea-bordered w-full min-h-[420px] font-mono text-xs"
-              value={jsonPreview}
-              disabled={readOnly}
-              onChange={(e) => handleJSONChange(e.target.value)}
-              placeholder={'{\n  "type": "socks",\n  "tag": "node",\n  "server": "127.0.0.1",\n  "server_port": 1080\n}'}
-            />
+            <div className="space-y-3">
+              <fieldset className="fieldset">
+                <legend className="fieldset-legend">URI</legend>
+                <label className="input input-sm w-full flex items-center gap-2">
+                  <input
+                    className="grow font-mono text-xs"
+                    value={form.uri}
+                    disabled={readOnly}
+                    onChange={(e) => onChange({ ...form, uri: e.target.value })}
+                    placeholder="trojan://password@example.com:443?sni=example.com#节点名称"
+                  />
+                  {uriParsing && <span className="loading loading-spinner loading-xs"></span>}
+                </label>
+              </fieldset>
+              <textarea
+                className="textarea textarea-bordered w-full min-h-[380px] font-mono text-xs"
+                value={jsonPreview}
+                disabled={readOnly}
+                onChange={(e) => handleJSONChange(e.target.value)}
+                placeholder={'{\n  "type": "socks",\n  "tag": "node",\n  "server": "127.0.0.1",\n  "server_port": 1080\n}'}
+              />
+            </div>
           )}
 
           {tab === 'inbound' && (
@@ -453,7 +531,7 @@ export default function NodeEditorModal({
           <div className="modal-action">
             <button type="button" className="btn btn-ghost" onClick={onClose}>{readOnly ? '关闭' : '取消'}</button>
             {!readOnly && (
-              <button type="submit" className="btn btn-primary" disabled={submitting || !!jsonError}>
+              <button type="submit" className="btn btn-primary" disabled={submitting || uriParsing || !!jsonError || !!uriError}>
                 {submitting ? <span className="loading loading-spinner loading-xs"></span> : (editingName ? '更新' : '添加')}
               </button>
             )}

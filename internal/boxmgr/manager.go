@@ -933,6 +933,43 @@ func (m *Manager) ListConfigNodes(ctx context.Context) ([]config.NodeConfig, err
 	return result, nil
 }
 
+// ParseNodeURI converts a supported proxy URI into structured sing-box outbound JSON.
+func (m *Manager) ParseNodeURI(ctx context.Context, name string, uri string) (config.NodeConfig, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return config.NodeConfig{}, err
+		}
+	}
+
+	name = strings.TrimSpace(name)
+	uri = strings.TrimSpace(uri)
+	if uri == "" {
+		return config.NodeConfig{}, fmt.Errorf("%w: URI 不能为空", monitor.ErrInvalidNode)
+	}
+	if !config.IsProxyURI(uri) {
+		return config.NodeConfig{}, fmt.Errorf("%w: 不支持的代理 URI", monitor.ErrInvalidNode)
+	}
+	if name == "" {
+		name = config.ExtractNodeName(uri)
+	}
+	if name == "" {
+		name = "node"
+	}
+
+	m.mu.RLock()
+	skipCertVerify := false
+	if m.cfg != nil {
+		skipCertVerify = m.cfg.SkipCertVerify
+	}
+	m.mu.RUnlock()
+
+	outboundJSON, err := builder.OutboundJSONFromURI(name, uri, skipCertVerify)
+	if err != nil {
+		return config.NodeConfig{}, fmt.Errorf("%w: %v", monitor.ErrInvalidNode, err)
+	}
+	return config.NodeConfig{Name: name, URI: uri, OutboundJSON: outboundJSON}, nil
+}
+
 // CreateNode adds a new node to the config and saves it.
 func (m *Manager) CreateNode(ctx context.Context, node config.NodeConfig) (config.NodeConfig, error) {
 	if ctx != nil {

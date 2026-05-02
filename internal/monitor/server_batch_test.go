@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"easy_proxies/internal/config"
@@ -37,6 +38,22 @@ func (m *fakeNodeManager) ListConfigNodes(context.Context) ([]config.NodeConfig,
 		nodes = append(nodes, node)
 	}
 	return nodes, nil
+}
+
+func (m *fakeNodeManager) ParseNodeURI(_ context.Context, name string, uri string) (config.NodeConfig, error) {
+	name = strings.TrimSpace(name)
+	uri = strings.TrimSpace(uri)
+	if name == "" {
+		name = config.ExtractNodeName(uri)
+	}
+	if name == "" {
+		name = "node"
+	}
+	return config.NodeConfig{
+		Name:         name,
+		URI:          uri,
+		OutboundJSON: `{"type":"socks","tag":"` + name + `","server":"127.0.0.1","server_port":1080}`,
+	}, nil
 }
 
 func (m *fakeNodeManager) CreateNode(_ context.Context, node config.NodeConfig) (config.NodeConfig, error) {
@@ -150,6 +167,30 @@ func TestHandleImportReportsInvalidLines(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	if resp.Imported != 1 || len(resp.Errors) != 1 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestHandleNodeURIParseReturnsOutboundJSON(t *testing.T) {
+	server := &Server{nodeMgr: newFakeNodeManager(), logger: log.Default()}
+	body := bytes.NewBufferString(`{"uri":"socks5://user:pass@127.0.0.1:1080#parsed"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/config/parse-uri", body)
+	rec := httptest.NewRecorder()
+
+	server.handleNodeURIParse(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Name         string `json:"name"`
+		URI          string `json:"uri"`
+		OutboundJSON string `json:"outbound_json"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Name != "parsed" || !strings.Contains(resp.OutboundJSON, `"server":"127.0.0.1"`) {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
