@@ -235,6 +235,8 @@ git merge --no-ff feat/v2-<stage-name>
 
 建议分支：`docs/v2-migration-guide`
 
+完成标记: done
+
 ### 任务
 
 - 更新 `config.example.yaml`。

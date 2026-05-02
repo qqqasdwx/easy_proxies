@@ -25,6 +25,7 @@
 ```bash
 cp config.example.yaml config.yaml
 touch nodes.txt
+mkdir -p logs data
 ```
 
 Edit `config.yaml` and add your proxy nodes (inline nodes, `nodes.txt` file, or subscription URLs).
@@ -107,7 +108,7 @@ nodes_file: nodes.txt
 
 See [config.example.yaml](config.example.yaml) for the full documented configuration with all available options.
 
-`database_path` points to the optional SQLite store. The store layer is available for persistence features, while the current `config.yaml` and `nodes.txt` sources remain compatible.
+`database_path` points to the optional SQLite store. It persists WebUI-managed nodes, disabled flags, sessions, and traffic statistics while keeping `config.yaml` and `nodes.txt` compatible. See [SQLite Store Migration Guide](docs/sqlite-migration.md).
 
 ## GeoIP Region Routing
 
@@ -292,10 +293,10 @@ Access at `http://your-server:9091` (configurable via the `management` section).
 
 Features:
 
-- **Dashboard**: Real-time node status, traffic charts, region availability, latency monitoring
-- **Node Config**: Add/edit/delete inline nodes and subscription URLs
+- **React dashboard**: Real-time node status, traffic charts, region availability, latency monitoring
+- **Node Config**: Add/edit/delete/import nodes, batch enable/disable, and subscription URLs
 - **Diagnostics**: Connectivity testing and node state export
-- **Console**: Real-time application logs (last 1000 lines, WebSocket streaming)
+- **Console**: Application logs from the in-memory ring buffer (last 1000 lines)
 - **Settings**: All configuration options editable from the browser, changes persist to `config.yaml`
 
 When `management.password` is empty, authentication is bypassed.
@@ -311,11 +312,16 @@ When `management.password` is empty, authentication is bypassed.
 | `/api/nodes/{tag}/blacklist` | POST | Manually blacklist a node |
 | `/api/nodes/{tag}/release` | POST | Release node from blacklist |
 | `/api/nodes/probe-all` | POST | Probe all nodes (SSE stream) |
+| `/api/nodes/traffic/stream` | GET | Stream aggregated traffic stats (SSE) |
 | `/api/export` | GET | Export node configuration |
+| `/api/import` | POST | Import proxy URI lines |
 | `/api/subscription/config` | GET, PUT | Manage subscription URLs |
 | `/api/subscription/status` | GET | Check subscription status |
 | `/api/subscription/refresh` | POST | Trigger manual refresh |
 | `/api/nodes/config` | GET, POST, PUT, DELETE | CRUD for node config |
+| `/api/nodes/config/batch-toggle` | POST | Batch enable/disable nodes |
+| `/api/nodes/config/batch-delete` | POST | Batch delete nodes |
+| `/api/logs` | GET | Read recent application logs |
 | `/api/reload` | POST | Reload sing-box instance |
 
 ## Docker Deployment
@@ -335,12 +341,14 @@ services:
       - ./config.yaml:/etc/easy_proxies/config.yaml
       - ./nodes.txt:/etc/easy_proxies/nodes.txt
       - ./logs:/app/logs
+      - ./data:/etc/easy_proxies/data
 ```
 
 ### Important Notes
 
-- **Create config files first**: `config.yaml` and `nodes.txt` must exist as files before running `docker compose up`. Use `./start.sh` which handles this automatically.
+- **Create mutable paths first**: `config.yaml` and `nodes.txt` must exist as files, and `logs/` / `data/` should exist as directories before running `docker compose up`. Use `./start.sh` which handles this automatically.
 - **Permissions**: Files need write permission for WebUI settings to persist (`chmod 666 config.yaml nodes.txt`).
+- **SQLite data**: keep `./data` mounted to preserve WebUI node state, sessions, and traffic totals across restarts.
 - **Multi-platform**: Supports amd64 and arm64 architectures.
 - **Reload**: `/api/reload` and subscription refresh will interrupt active connections.
 
@@ -361,6 +369,9 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ```bash
 go test ./...
+npm ci --prefix frontend
+npm run build --prefix frontend
+docker build -t easy_proxies:dev .
 ```
 
 ## Star History
