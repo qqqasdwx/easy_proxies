@@ -183,12 +183,14 @@ func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store)
 			continue
 		}
 		filtered = append(filtered, config.NodeConfig{
-			Name:     node.Name,
-			URI:      node.URI,
-			Port:     node.Port,
-			Username: node.Username,
-			Password: node.Password,
-			Source:   config.NodeSource(node.Source),
+			Name:            node.Name,
+			URI:             node.URI,
+			OutboundJSON:    node.OutboundJSON,
+			Port:            node.Port,
+			InboundProtocol: node.InboundProtocol,
+			Username:        node.Username,
+			Password:        node.Password,
+			Source:          config.NodeSource(node.Source),
 		})
 	}
 	cfg.Nodes = filtered

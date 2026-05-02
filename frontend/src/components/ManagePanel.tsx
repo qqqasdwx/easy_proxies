@@ -6,6 +6,7 @@ import {
   importNodes, exportProxies,
   fetchNodes, probeNode, releaseNode,
 } from '../api/client'
+import NodeEditorModal from './NodeEditorModal'
 
 // ---- Merged node type ----
 interface MergedNode extends ConfigNodeConfig {
@@ -120,7 +121,9 @@ function StatusBadge({ status }: { status: MergedNode['runtimeStatus'] }) {
 const emptyPayload: ConfigNodePayload = {
   name: '',
   uri: '',
+  outbound_json: '',
   port: 0,
+  inbound_protocol: '',
   username: '',
   password: '',
 }
@@ -138,6 +141,7 @@ export default function ManagePanel() {
   // Modal state
   const [modalOpen, setModalOpen] = useState(false)
   const [editingNode, setEditingNode] = useState<string | null>(null)
+  const [modalReadOnly, setModalReadOnly] = useState(false)
   const [form, setForm] = useState<ConfigNodePayload>(emptyPayload)
   const [formError, setFormError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -322,6 +326,7 @@ export default function ManagePanel() {
 
   const openCreateModal = () => {
     setEditingNode(null)
+    setModalReadOnly(false)
     setForm(emptyPayload)
     setFormError('')
     setModalOpen(true)
@@ -329,10 +334,29 @@ export default function ManagePanel() {
 
   const openEditModal = (node: MergedNode) => {
     setEditingNode(node.name)
+    setModalReadOnly(false)
     setForm({
       name: node.name,
       uri: node.uri,
+      outbound_json: node.outbound_json || '',
       port: node.port,
+      inbound_protocol: node.inbound_protocol || '',
+      username: node.username || '',
+      password: node.password || '',
+    })
+    setFormError('')
+    setModalOpen(true)
+  }
+
+  const openViewModal = (node: MergedNode) => {
+    setEditingNode(node.name)
+    setModalReadOnly(true)
+    setForm({
+      name: node.name,
+      uri: node.uri,
+      outbound_json: node.outbound_json || '',
+      port: node.port,
+      inbound_protocol: node.inbound_protocol || '',
       username: node.username || '',
       password: node.password || '',
     })
@@ -342,8 +366,9 @@ export default function ManagePanel() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (modalReadOnly) return
     if (!form.name.trim()) { setFormError('节点名称不能为空'); return }
-    if (!form.uri.trim()) { setFormError('URI 不能为空'); return }
+    if (!form.uri.trim() && !form.outbound_json.trim()) { setFormError('URI 或 JSON 不能为空'); return }
 
     setSubmitting(true)
     setFormError('')
@@ -907,6 +932,15 @@ export default function ManagePanel() {
                                 : <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
                           }
                         </button>
+                        {node.source === 'subscription' && (
+                          <button
+                            className="btn btn-sm btn-square btn-ghost text-info hover:bg-info/10"
+                            onClick={() => openViewModal(node)}
+                            title="查看订阅节点"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                          </button>
+                        )}
                         {node.source !== 'subscription' && (
                           <>
                             {/* Edit */}
@@ -944,75 +978,17 @@ export default function ManagePanel() {
         </div>
       )}
 
-      {/* Create / Edit Modal */}
-      {modalOpen && (
-        <div className="modal modal-open">
-          <div className="modal-box">
-            <h3 className="font-bold text-xl mb-4">
-              {editingNode ? `编辑节点: ${editingNode}` : '添加节点'}
-            </h3>
-            <form onSubmit={handleSubmit}>
-              {formError && (
-                <div className="alert alert-error mb-3 py-2 text-sm"><span>{formError}</span></div>
-              )}
-              <fieldset className="fieldset mb-3">
-                <legend className="fieldset-legend">名称 *</legend>
-                <input
-                  type="text" className="input input-sm w-full" placeholder="节点名称"
-                  value={form.name}
-                  onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))}
-                  disabled={!!editingNode}
-                />
-              </fieldset>
-              <fieldset className="fieldset mb-3">
-                <legend className="fieldset-legend">URI *</legend>
-                <input
-                  type="text" className="input input-sm w-full font-mono text-xs"
-                  placeholder="trojan://password@host:port?..."
-                  value={form.uri}
-                  onChange={(e) => setForm(f => ({ ...f, uri: e.target.value }))}
-                />
-              </fieldset>
-              <fieldset className="fieldset mb-3">
-                <legend className="fieldset-legend">本地代理端口</legend>
-                <input
-                  type="number" className="input input-sm w-full" placeholder="0 = 自动分配"
-                  value={form.port || ''}
-                  onChange={(e) => setForm(f => ({ ...f, port: parseInt(e.target.value) || 0 }))}
-                  min={0} max={65535}
-                />
-              </fieldset>
-              <div className="grid grid-cols-2 gap-3 mb-4">
-                <fieldset className="fieldset">
-                  <legend className="fieldset-legend">用户名</legend>
-                  <input
-                    type="text" className="input input-sm w-full" placeholder="可选"
-                    value={form.username}
-                    onChange={(e) => setForm(f => ({ ...f, username: e.target.value }))}
-                  />
-                </fieldset>
-                <fieldset className="fieldset">
-                  <legend className="fieldset-legend">密码</legend>
-                  <input
-                    type="text" className="input input-sm w-full" placeholder="可选"
-                    value={form.password}
-                    onChange={(e) => setForm(f => ({ ...f, password: e.target.value }))}
-                  />
-                </fieldset>
-              </div>
-              <div className="modal-action">
-                <button type="button" className="btn btn-ghost" onClick={() => setModalOpen(false)}>取消</button>
-                <button type="submit" className="btn btn-primary" disabled={submitting}>
-                  {submitting ? <span className="loading loading-spinner loading-xs"></span> : (editingNode ? '更新' : '添加')}
-                </button>
-              </div>
-            </form>
-          </div>
-          <form method="dialog" className="modal-backdrop" onClick={() => setModalOpen(false)}>
-            <button>close</button>
-          </form>
-        </div>
-      )}
+      <NodeEditorModal
+        open={modalOpen}
+        editingName={editingNode}
+        readOnly={modalReadOnly}
+        form={form}
+        formError={formError}
+        submitting={submitting}
+        onClose={() => setModalOpen(false)}
+        onSubmit={handleSubmit}
+        onChange={setForm}
+      />
 
       {/* Import Modal */}
       {importModalOpen && (

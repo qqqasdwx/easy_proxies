@@ -574,14 +574,16 @@ func (m *Manager) persistSubscriptionNodes(ctx context.Context, sourceID int64, 
 			}
 			nextURIs[node.URI] = struct{}{}
 			upserts = append(upserts, store.Node{
-				URI:            node.URI,
-				Name:           node.Name,
-				Source:         store.NodeSourceSubscription,
-				Port:           node.Port,
-				Username:       node.Username,
-				Password:       node.Password,
-				SubscriptionID: sourceID,
-				Enabled:        enabled,
+				URI:             node.URI,
+				Name:            node.Name,
+				Source:          store.NodeSourceSubscription,
+				Port:            node.Port,
+				InboundProtocol: node.InboundProtocol,
+				Username:        node.Username,
+				Password:        node.Password,
+				OutboundJSON:    node.OutboundJSON,
+				SubscriptionID:  sourceID,
+				Enabled:         enabled,
 			})
 		}
 		for _, node := range existing {

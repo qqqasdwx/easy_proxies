@@ -148,19 +148,21 @@ type Store interface {
 
 // Node represents a proxy node stored in the database.
 type Node struct {
-	ID             int64     `json:"id"`
-	URI            string    `json:"uri"`
-	Name           string    `json:"name"`
-	Source         string    `json:"source"` // manual or subscription
-	Port           uint16    `json:"port"`
-	Username       string    `json:"username,omitempty"`
-	Password       string    `json:"password,omitempty"`
-	SubscriptionID int64     `json:"subscription_id,omitempty"`
-	Region         string    `json:"region,omitempty"`
-	Country        string    `json:"country,omitempty"`
-	Enabled        bool      `json:"enabled"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID              int64     `json:"id"`
+	URI             string    `json:"uri"`
+	Name            string    `json:"name"`
+	Source          string    `json:"source"` // manual or subscription
+	Port            uint16    `json:"port"`
+	Username        string    `json:"username,omitempty"`
+	Password        string    `json:"password,omitempty"`
+	SubscriptionID  int64     `json:"subscription_id,omitempty"`
+	InboundProtocol string    `json:"inbound_protocol,omitempty"`
+	OutboundJSON    string    `json:"outbound_json,omitempty"`
+	Region          string    `json:"region,omitempty"`
+	Country         string    `json:"country,omitempty"`
+	Enabled         bool      `json:"enabled"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // NodeFilter specifies criteria for listing nodes.
