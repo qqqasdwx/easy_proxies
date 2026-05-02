@@ -58,6 +58,8 @@ git merge --no-ff feat/v2-<stage-name>
 
 建议分支：`feat/v2-baseline-audit`
 
+完成标记: done
+
 ### 任务
 
 - 运行当前主线测试：`go test ./...`。
