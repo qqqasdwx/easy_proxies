@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +156,32 @@ func TestBuildUsesPerNodeInboundProtocolAndOutboundJSON(t *testing.T) {
 	}
 	if !foundOutbound || !foundInbound {
 		t.Fatalf("found outbound=%v inbound=%v", foundOutbound, foundInbound)
+	}
+}
+
+func TestNormalizeOutboundJSONPreservesOptions(t *testing.T) {
+	normalized, err := NormalizeOutboundJSON("json-node", `{
+		"type": "socks",
+		"tag": "ignored",
+		"server": "127.0.0.1",
+		"server_port": 1080,
+		"version": "5",
+		"username": "user",
+		"password": "pass"
+	}`)
+	if err != nil {
+		t.Fatalf("normalize outbound json: %v", err)
+	}
+	for _, want := range []string{
+		`"tag": "json-node"`,
+		`"server": "127.0.0.1"`,
+		`"server_port": 1080`,
+		`"username": "user"`,
+		`"password": "pass"`,
+	} {
+		if !strings.Contains(normalized, want) {
+			t.Fatalf("normalized JSON missing %s:\n%s", want, normalized)
+		}
 	}
 }
 
