@@ -154,6 +154,8 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.currentBox = instance
 	m.mu.Unlock()
 
+	m.restoreMonitorTrafficFromStore(ctx)
+
 	// Start periodic health check after nodes are registered
 	m.mu.Lock()
 	if m.monitorMgr != nil && !m.healthCheckStarted {
@@ -207,6 +209,7 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 	}
 
 	m.logger.Infof("reloading with %d nodes", len(newCfg.Nodes))
+	m.FlushStatsToStore(ctx)
 
 	// For multi-port mode, we must close old instance first to release ports
 	// This causes a brief interruption but avoids port conflicts
@@ -274,6 +277,8 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 		m.monitorServer.SetConfig(m.cfg)
 	}
 
+	m.restoreMonitorTrafficFromStore(ctx)
+
 	// Trigger initial health check for newly registered nodes
 	if m.monitorMgr != nil {
 		go m.monitorMgr.ProbeAllNow(periodicHealthTimeout)
@@ -325,6 +330,8 @@ func (m *Manager) rollbackToOldConfig(ctx context.Context, oldCfg *config.Config
 
 // Close terminates the active instance and auxiliary components.
 func (m *Manager) Close() error {
+	m.FlushStatsToStore(context.Background())
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -362,6 +369,152 @@ func (m *Manager) MonitorServer() *monitor.Server {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.monitorServer
+}
+
+// FlushStatsToStore writes the current monitor runtime stats to the optional store.
+func (m *Manager) FlushStatsToStore(ctx context.Context) {
+	ctx = storeContext(ctx)
+
+	m.mu.RLock()
+	st := m.store
+	monitorMgr := m.monitorMgr
+	logger := m.logger
+	m.mu.RUnlock()
+
+	if st == nil || monitorMgr == nil {
+		return
+	}
+	flushMonitorStatsToStore(ctx, monitorMgr, st, logger)
+}
+
+func (m *Manager) restoreMonitorTrafficFromStore(ctx context.Context) {
+	ctx = storeContext(ctx)
+
+	m.mu.RLock()
+	st := m.store
+	monitorMgr := m.monitorMgr
+	logger := m.logger
+	m.mu.RUnlock()
+
+	if st == nil || monitorMgr == nil {
+		return
+	}
+
+	storeNodes, err := st.ListNodes(ctx, store.NodeFilter{})
+	if err != nil {
+		warnf(logger, "failed to list store nodes for traffic restore: %v", err)
+		return
+	}
+	statsByID, err := st.GetAllNodeStats(ctx)
+	if err != nil {
+		warnf(logger, "failed to list node stats for traffic restore: %v", err)
+		return
+	}
+
+	lookup := buildStoreNodeLookup(storeNodes)
+	for _, snap := range monitorMgr.Snapshot() {
+		nodeID, ok := lookupNodeID(lookup, snap)
+		if !ok {
+			continue
+		}
+		stats := statsByID[nodeID]
+		if stats == nil {
+			continue
+		}
+		if err := monitorMgr.SetTraffic(snap.Tag, stats.TotalUploadBytes, stats.TotalDownloadBytes); err != nil {
+			warnf(logger, "failed to restore traffic for %s: %v", snap.Tag, err)
+		}
+	}
+}
+
+type storeNodeLookup struct {
+	byURI  map[string]int64
+	byName map[string]int64
+}
+
+func buildStoreNodeLookup(nodes []store.Node) storeNodeLookup {
+	lookup := storeNodeLookup{
+		byURI:  make(map[string]int64, len(nodes)),
+		byName: make(map[string]int64, len(nodes)),
+	}
+	for _, node := range nodes {
+		if node.URI != "" {
+			lookup.byURI[node.URI] = node.ID
+		}
+		if node.Name != "" {
+			lookup.byName[node.Name] = node.ID
+		}
+	}
+	return lookup
+}
+
+func lookupNodeID(lookup storeNodeLookup, snap monitor.Snapshot) (int64, bool) {
+	if snap.URI != "" {
+		if id, ok := lookup.byURI[snap.URI]; ok {
+			return id, true
+		}
+	}
+	if snap.Name != "" {
+		if id, ok := lookup.byName[snap.Name]; ok {
+			return id, true
+		}
+	}
+	if snap.Tag != "" {
+		if id, ok := lookup.byName[snap.Tag]; ok {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+func flushMonitorStatsToStore(ctx context.Context, monitorMgr *monitor.Manager, st store.Store, logger Logger) {
+	snapshots := monitorMgr.Snapshot()
+	if len(snapshots) == 0 {
+		return
+	}
+
+	storeNodes, err := st.ListNodes(ctx, store.NodeFilter{})
+	if err != nil {
+		warnf(logger, "failed to list store nodes for stats flush: %v", err)
+		return
+	}
+	lookup := buildStoreNodeLookup(storeNodes)
+
+	updates := make([]store.StatsUpdate, 0, len(snapshots))
+	for _, snap := range snapshots {
+		nodeID, ok := lookupNodeID(lookup, snap)
+		if !ok || nodeID == 0 {
+			continue
+		}
+		updates = append(updates, store.StatsUpdate{
+			NodeID:             nodeID,
+			FailureCount:       snap.FailureCount,
+			SuccessCount:       snap.SuccessCount,
+			Blacklisted:        snap.Blacklisted,
+			BlacklistedUntil:   snap.BlacklistedUntil,
+			LastError:          snap.LastError,
+			LastFailureAt:      snap.LastFailure,
+			LastSuccessAt:      snap.LastSuccess,
+			LastLatencyMs:      snap.LastLatencyMs,
+			Available:          snap.Available,
+			InitialCheckDone:   snap.InitialCheckDone,
+			TotalUploadBytes:   snap.TotalUpload,
+			TotalDownloadBytes: snap.TotalDownload,
+		})
+	}
+
+	if len(updates) == 0 {
+		return
+	}
+	if err := st.BatchUpdateStats(ctx, updates); err != nil {
+		warnf(logger, "failed to flush node stats to store: %v", err)
+	}
+}
+
+func warnf(logger Logger, format string, args ...any) {
+	if logger != nil {
+		logger.Warnf(format, args...)
+	}
 }
 
 // startGeoIPRouter starts the GeoIP region-routing HTTP proxy server.

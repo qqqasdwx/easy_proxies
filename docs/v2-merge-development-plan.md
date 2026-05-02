@@ -184,6 +184,8 @@ git merge --no-ff feat/v2-<stage-name>
 
 建议分支：`feat/v2-traffic-stats`
 
+完成标记: done
+
 ### 目标
 
 参考 V2 引入节点级流量统计、速度采样、周期落库。
