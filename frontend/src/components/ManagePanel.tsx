@@ -578,8 +578,6 @@ export default function ManagePanel() {
   // ---- Source label ----
   const sourceLabel = (source?: string) => {
     switch (source) {
-      case 'inline': return '配置文件'
-      case 'nodes_file': return '节点文件'
       case 'subscription': return '订阅'
       case 'manual': return '手动添加'
       default: return source || '-'

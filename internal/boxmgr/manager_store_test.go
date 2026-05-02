@@ -36,7 +36,7 @@ func TestListConfigNodesIncludesStoreDisabledNodes(t *testing.T) {
 		Nodes: []config.NodeConfig{{
 			Name:   "enabled",
 			URI:    "http://user:pass@enabled.example.com:8080",
-			Source: config.NodeSourceFile,
+			Source: config.NodeSourceManual,
 		}},
 	}, monitor.Config{}, WithStore(st))
 
@@ -62,7 +62,7 @@ func TestListConfigNodesIncludesStoreDisabledNodes(t *testing.T) {
 	}
 }
 
-func TestSetNodeEnabledDoesNotRewriteConfigSources(t *testing.T) {
+func TestSetNodeEnabledPersistsManualSource(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -75,14 +75,14 @@ func TestSetNodeEnabledDoesNotRewriteConfigSources(t *testing.T) {
 	})
 
 	node := config.NodeConfig{
-		Name:   "inline-node",
+		Name:   "manual-node",
 		URI:    "http://user:pass@example.com:8080",
-		Source: config.NodeSourceInline,
+		Source: config.NodeSourceManual,
 	}
 	if err := st.CreateNode(ctx, &store.Node{
 		URI:     node.URI,
 		Name:    node.Name,
-		Source:  store.NodeSourceInline,
+		Source:  store.NodeSourceManual,
 		Enabled: true,
 	}); err != nil {
 		t.Fatalf("create store node: %v", err)
@@ -97,7 +97,7 @@ func TestSetNodeEnabledDoesNotRewriteConfigSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list nodes: %v", err)
 	}
-	if len(nodes) != 1 || nodes[0].Source != config.NodeSourceInline || !nodes[0].Disabled {
+	if len(nodes) != 1 || nodes[0].Source != config.NodeSourceManual || !nodes[0].Disabled {
 		t.Fatalf("unexpected listed node: %+v", nodes)
 	}
 

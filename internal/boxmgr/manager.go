@@ -1133,44 +1133,6 @@ func (m *Manager) CurrentPortMap() map[string]uint16 {
 	return m.cfg.BuildPortMap()
 }
 
-func (m *Manager) syncStoreFromConfig(ctx context.Context, cfg *config.Config) error {
-	if m.store == nil || cfg == nil {
-		return nil
-	}
-	ctx = storeContext(ctx)
-
-	existing, err := m.store.ListNodes(ctx, store.NodeFilter{})
-	if err != nil {
-		return fmt.Errorf("list store nodes: %w", err)
-	}
-	enabledByURI := make(map[string]bool, len(existing))
-	for _, node := range existing {
-		enabledByURI[node.URI] = node.Enabled
-	}
-
-	nodes := make([]store.Node, 0, len(cfg.Nodes))
-	for _, node := range cfg.Nodes {
-		source := string(node.Source)
-		if source == "" {
-			source = store.NodeSourceInline
-		}
-		enabled := !node.Disabled
-		if existingEnabled, ok := enabledByURI[node.URI]; ok {
-			enabled = existingEnabled
-		}
-		nodes = append(nodes, store.Node{
-			URI:      node.URI,
-			Name:     node.Name,
-			Source:   source,
-			Port:     node.Port,
-			Username: node.Username,
-			Password: node.Password,
-			Enabled:  enabled,
-		})
-	}
-	return m.store.BulkUpsertNodes(ctx, nodes)
-}
-
 func (m *Manager) applyStoreNodeState(ctx context.Context, cfg *config.Config) error {
 	if m.store == nil || cfg == nil {
 		return nil
@@ -1347,12 +1309,6 @@ func (m *Manager) copyConfigLocked() *config.Config {
 	}
 	cloned := *m.cfg
 	cloned.Nodes = cloneNodes(m.cfg.Nodes)
-	// Clone Subscriptions slice to avoid shared backing array issues
-	if len(m.cfg.Subscriptions) > 0 {
-		cloned.Subscriptions = make([]string, len(m.cfg.Subscriptions))
-		copy(cloned.Subscriptions, m.cfg.Subscriptions)
-	}
-	cloned.SetFilePath(m.cfg.FilePath())
 	return &cloned
 }
 

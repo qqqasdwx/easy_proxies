@@ -2,19 +2,9 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func writeTestConfig(t *testing.T, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	return path
-}
 
 func clearManagementEnv(t *testing.T) {
 	t.Helper()
@@ -37,12 +27,12 @@ func clearManagementEnv(t *testing.T) {
 	}
 }
 
-func TestLoadMissingConfigUsesManagementOnlyDefaults(t *testing.T) {
+func TestDefaultUsesManagementOnlyDefaults(t *testing.T) {
 	clearManagementEnv(t)
 
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	cfg, err := Default()
 	if err != nil {
-		t.Fatalf("load missing config: %v", err)
+		t.Fatalf("default config: %v", err)
 	}
 	if len(cfg.Nodes) != 0 {
 		t.Fatalf("nodes = %d, want 0", len(cfg.Nodes))
@@ -53,7 +43,7 @@ func TestLoadMissingConfigUsesManagementOnlyDefaults(t *testing.T) {
 	if cfg.Management.Listen != "0.0.0.0:9091" {
 		t.Fatalf("management listen = %q, want 0.0.0.0:9091", cfg.Management.Listen)
 	}
-	if cfg.DatabasePath != filepath.Join("data", "data.db") {
+	if cfg.DatabasePath != "data/data.db" {
 		t.Fatalf("database path = %q, want data/data.db", cfg.DatabasePath)
 	}
 }
@@ -63,9 +53,9 @@ func TestManagementEnvOverrides(t *testing.T) {
 	t.Setenv(EnvManagementPort, "19091")
 	t.Setenv(EnvManagementPassword, "secret")
 
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	cfg, err := Default()
 	if err != nil {
-		t.Fatalf("load missing config: %v", err)
+		t.Fatalf("default config: %v", err)
 	}
 	if cfg.Management.Listen != "0.0.0.0:19091" {
 		t.Fatalf("management listen = %q, want 0.0.0.0:19091", cfg.Management.Listen)
@@ -75,16 +65,12 @@ func TestManagementEnvOverrides(t *testing.T) {
 	}
 }
 
-func TestLoadInboundProtocolDefaultsToMixed(t *testing.T) {
-	path := writeTestConfig(t, `
-mode: pool
-nodes:
-  - name: node-1
-    uri: http://user:pass@example.com:8080
-`)
-	cfg, err := Load(path)
+func TestDefaultInboundProtocolDefaultsToMixed(t *testing.T) {
+	clearManagementEnv(t)
+
+	cfg, err := Default()
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf("default config: %v", err)
 	}
 
 	if cfg.Listener.Protocol != InboundProtocolMixed {
@@ -93,26 +79,22 @@ nodes:
 	if cfg.MultiPort.Protocol != InboundProtocolMixed {
 		t.Fatalf("multi-port protocol = %q, want %q", cfg.MultiPort.Protocol, InboundProtocolMixed)
 	}
-
-	wantDatabasePath := filepath.Join(filepath.Dir(path), "data", "data.db")
-	if cfg.DatabasePath != wantDatabasePath {
-		t.Fatalf("database path = %q, want %q", cfg.DatabasePath, wantDatabasePath)
+	if cfg.DatabasePath != "data/data.db" {
+		t.Fatalf("database path = %q, want data/data.db", cfg.DatabasePath)
 	}
 }
 
-func TestLoadInboundProtocolNormalizesAliases(t *testing.T) {
-	cfg, err := Load(writeTestConfig(t, `
-mode: pool
-listener:
-  protocol: SOCKS
-multi_port:
-  protocol: HTTP
-nodes:
-  - name: node-1
-    uri: http://user:pass@example.com:8080
-`))
-	if err != nil {
-		t.Fatalf("load config: %v", err)
+func TestNormalizeInboundProtocolNormalizesAliases(t *testing.T) {
+	cfg := Config{
+		Listener:  ListenerConfig{Protocol: "SOCKS"},
+		MultiPort: MultiPortConfig{Protocol: "HTTP"},
+		Nodes: []NodeConfig{{
+			Name: "node-1",
+			URI:  "http://user:pass@example.com:8080",
+		}},
+	}
+	if err := cfg.NormalizeWithPortMap(nil); err != nil {
+		t.Fatalf("normalize config: %v", err)
 	}
 
 	if cfg.Listener.Protocol != InboundProtocolSOCKS5 {
@@ -123,15 +105,15 @@ nodes:
 	}
 }
 
-func TestLoadInboundProtocolRejectsInvalidValue(t *testing.T) {
-	_, err := Load(writeTestConfig(t, `
-mode: pool
-listener:
-  protocol: ftp
-nodes:
-  - name: node-1
-    uri: http://user:pass@example.com:8080
-`))
+func TestNormalizeInboundProtocolRejectsInvalidValue(t *testing.T) {
+	cfg := Config{
+		Listener: ListenerConfig{Protocol: "ftp"},
+		Nodes: []NodeConfig{{
+			Name: "node-1",
+			URI:  "http://user:pass@example.com:8080",
+		}},
+	}
+	err := cfg.NormalizeWithPortMap(nil)
 	if err == nil {
 		t.Fatal("expected invalid protocol error")
 	}

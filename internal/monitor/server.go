@@ -27,13 +27,6 @@ import (
 //go:embed assets/*
 var embeddedFS embed.FS
 
-// Session represents a user session with expiration.
-type Session struct {
-	Token     string
-	CreatedAt time.Time
-	ExpiresAt time.Time
-}
-
 // NodeManager exposes config node CRUD and reload operations.
 type NodeManager interface {
 	ListConfigNodes(ctx context.Context) ([]config.NodeConfig, error)
@@ -61,13 +54,12 @@ type SubscriptionRefresher interface {
 
 // SubscriptionStatus represents subscription refresh status.
 type SubscriptionStatus struct {
-	LastRefresh   time.Time `json:"last_refresh"`
-	NextRefresh   time.Time `json:"next_refresh"`
-	NodeCount     int       `json:"node_count"`
-	LastError     string    `json:"last_error,omitempty"`
-	RefreshCount  int       `json:"refresh_count"`
-	IsRefreshing  bool      `json:"is_refreshing"`
-	NodesModified bool      `json:"nodes_modified"` // True if the configured nodes file was modified since last refresh
+	LastRefresh  time.Time `json:"last_refresh"`
+	NextRefresh  time.Time `json:"next_refresh"`
+	NodeCount    int       `json:"node_count"`
+	LastError    string    `json:"last_error,omitempty"`
+	RefreshCount int       `json:"refresh_count"`
+	IsRefreshing bool      `json:"is_refreshing"`
 }
 
 // Server exposes HTTP endpoints for monitoring.
@@ -80,9 +72,6 @@ type Server struct {
 	srv    *http.Server
 	logger *log.Logger
 
-	// Session management
-	sessionMu  sync.RWMutex
-	sessions   map[string]*Session
 	sessionTTL time.Duration
 
 	// Concurrency control
@@ -111,7 +100,6 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 		cfg:        cfg,
 		mgr:        mgr,
 		logger:     logger,
-		sessions:   make(map[string]*Session),
 		sessionTTL: 24 * time.Hour,
 		probeSem:   semaphore.NewWeighted(maxConcurrentProbes),
 	}
@@ -172,15 +160,6 @@ func (s *Server) SetConfig(cfg *config.Config) {
 	}
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
-	// Preserve subscription config from previous cfgSrc if new config has none
-	if cfg != nil && s.cfgSrc != nil {
-		if len(cfg.Subscriptions) == 0 && len(s.cfgSrc.Subscriptions) > 0 {
-			cfg.Subscriptions = s.cfgSrc.Subscriptions
-		}
-		if cfg.SubscriptionRefresh.Interval == 0 && s.cfgSrc.SubscriptionRefresh.Interval > 0 {
-			cfg.SubscriptionRefresh = s.cfgSrc.SubscriptionRefresh
-		}
-	}
 	s.cfgSrc = cfg
 	if cfg != nil {
 		s.cfg.ExternalIP = cfg.ExternalIP
@@ -1023,7 +1002,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"drain_timeout":        cfg.SubscriptionRefresh.DrainTimeout.String(),
 				"min_available_nodes":  cfg.SubscriptionRefresh.MinAvailableNodes,
 			}
-			resp["subscriptions"] = cfg.Subscriptions
 			resp["geoip"] = map[string]any{
 				"enabled":              cfg.GeoIP.Enabled,
 				"database_path":        cfg.GeoIP.DatabasePath,
@@ -1233,12 +1211,6 @@ func (s *Server) handleSubscriptionStatus(w http.ResponseWriter, r *http.Request
 				}
 			}
 		}
-	} else {
-		s.cfgMu.RLock()
-		if s.cfgSrc != nil {
-			hasSubscriptions = len(s.cfgSrc.Subscriptions) > 0
-		}
-		s.cfgMu.RUnlock()
 	}
 	writeJSON(w, map[string]any{
 		"enabled":           true,
@@ -1249,7 +1221,6 @@ func (s *Server) handleSubscriptionStatus(w http.ResponseWriter, r *http.Request
 		"last_error":        status.LastError,
 		"refresh_count":     status.RefreshCount,
 		"is_refreshing":     status.IsRefreshing,
-		"nodes_modified":    status.NodesModified,
 	})
 }
 
@@ -1292,7 +1263,6 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		var drainTimeout string
 		var minAvailableNodes int
 		if s.cfgSrc != nil {
-			urls = s.cfgSrc.Subscriptions
 			enabled = s.cfgSrc.SubscriptionRefresh.Enabled
 			interval = s.cfgSrc.SubscriptionRefresh.Interval.String()
 			timeout = s.cfgSrc.SubscriptionRefresh.Timeout.String()
@@ -1303,7 +1273,6 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		s.cfgMu.RUnlock()
 		if s.store != nil {
 			if sources, err := s.store.ListSubscriptionSources(r.Context()); err == nil {
-				urls = urls[:0]
 				for _, source := range sources {
 					if source.Enabled && source.URL != "" {
 						urls = append(urls, source.URL)
@@ -1327,7 +1296,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 
 	case http.MethodPut:
 		var req struct {
-			Subscriptions       []string `json:"subscriptions"`
+			URLs                []string `json:"subscriptions"`
 			Enabled             bool     `json:"enabled"`
 			Interval            string   `json:"interval"` // e.g. "1h", "30m"
 			Timeout             string   `json:"timeout"`
@@ -1362,10 +1331,28 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 
 		// Clean URLs
 		var cleanURLs []string
-		for _, u := range req.Subscriptions {
+		for _, u := range req.URLs {
 			u = strings.TrimSpace(u)
 			if u != "" {
 				cleanURLs = append(cleanURLs, u)
+			}
+		}
+
+		if s.store == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": "数据库存储未初始化"})
+			return
+		}
+		var currentURLs []string
+		sources, err := s.store.ListSubscriptionSources(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("读取订阅失败: %v", err)})
+			return
+		}
+		for _, source := range sources {
+			if source.Enabled && source.URL != "" {
+				currentURLs = append(currentURLs, source.URL)
 			}
 		}
 
@@ -1373,10 +1360,9 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		s.cfgMu.Lock()
 		var refreshNeeded bool
 		if s.cfgSrc != nil {
-			refreshNeeded = !sameStringSlice(s.cfgSrc.Subscriptions, cleanURLs) ||
+			refreshNeeded = !sameStringSlice(currentURLs, cleanURLs) ||
 				s.cfgSrc.SubscriptionRefresh.Enabled != enabled ||
 				s.cfgSrc.SubscriptionRefresh.Interval != interval
-			s.cfgSrc.Subscriptions = cleanURLs
 			s.cfgSrc.SubscriptionRefresh.Enabled = enabled
 			s.cfgSrc.SubscriptionRefresh.Interval = interval
 			s.cfgSrc.SubscriptionRefresh.Timeout = timeout
@@ -1385,30 +1371,23 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			if req.MinAvailableNodes > 0 {
 				s.cfgSrc.SubscriptionRefresh.MinAvailableNodes = req.MinAvailableNodes
 			}
-			if s.store != nil {
-				sources := make([]store.SubscriptionSource, 0, len(cleanURLs))
-				for idx, u := range cleanURLs {
-					sources = append(sources, store.SubscriptionSource{
-						Name:       fmt.Sprintf("subscription-%d", idx+1),
-						URL:        u,
-						Enabled:    true,
-						AutoUpdate: enabled,
-						Interval:   interval,
-					})
-				}
-				if err := s.store.ReplaceSubscriptionSources(r.Context(), sources); err != nil {
-					s.cfgMu.Unlock()
-					w.WriteHeader(http.StatusInternalServerError)
-					writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
-					return
-				}
-				if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {
-					s.cfgMu.Unlock()
-					w.WriteHeader(http.StatusInternalServerError)
-					writeJSON(w, map[string]any{"error": fmt.Sprintf("保存配置失败: %v", err)})
-					return
-				}
-			} else if err := s.cfgSrc.SaveSettings(); err != nil {
+			nextSources := make([]store.SubscriptionSource, 0, len(cleanURLs))
+			for idx, u := range cleanURLs {
+				nextSources = append(nextSources, store.SubscriptionSource{
+					Name:       fmt.Sprintf("subscription-%d", idx+1),
+					URL:        u,
+					Enabled:    true,
+					AutoUpdate: enabled,
+					Interval:   interval,
+				})
+			}
+			if err := s.store.ReplaceSubscriptionSources(r.Context(), nextSources); err != nil {
+				s.cfgMu.Unlock()
+				w.WriteHeader(http.StatusInternalServerError)
+				writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
+				return
+			}
+			if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {
 				s.cfgMu.Unlock()
 				w.WriteHeader(http.StatusInternalServerError)
 				writeJSON(w, map[string]any{"error": fmt.Sprintf("保存配置失败: %v", err)})
@@ -1843,31 +1822,25 @@ func (s *Server) generateSessionToken() (string, error) {
 	return hex.EncodeToString(tokenBytes), nil
 }
 
-// createSession creates a new session with expiration.
-func (s *Server) createSession() (*Session, error) {
+// createSession creates a new database-backed session with expiration.
+func (s *Server) createSession() (*store.Session, error) {
+	if s.store == nil {
+		return nil, errors.New("database store is required for sessions")
+	}
 	token, err := s.generateSessionToken()
 	if err != nil {
 		return nil, err
 	}
 
 	now := time.Now()
-	session := &Session{
+	session := &store.Session{
 		Token:     token,
 		CreatedAt: now,
 		ExpiresAt: now.Add(s.sessionTTL),
 	}
 
-	s.sessionMu.Lock()
-	s.sessions[token] = session
-	s.sessionMu.Unlock()
-	if s.store != nil {
-		if err := s.store.CreateSession(context.Background(), &store.Session{
-			Token:     session.Token,
-			CreatedAt: session.CreatedAt,
-			ExpiresAt: session.ExpiresAt,
-		}); err != nil {
-			s.logger.Printf("failed to persist session: %v", err)
-		}
+	if err := s.store.CreateSession(context.Background(), session); err != nil {
+		return nil, fmt.Errorf("persist session: %w", err)
 	}
 
 	return session, nil
@@ -1875,38 +1848,21 @@ func (s *Server) createSession() (*Session, error) {
 
 // validateSession checks if a session token is valid and not expired.
 func (s *Server) validateSession(token string) bool {
-	if s.store != nil {
-		session, err := s.store.GetSession(context.Background(), token)
-		if err != nil {
-			s.logger.Printf("failed to load session: %v", err)
-			return false
-		}
-		if session == nil {
-			return false
-		}
-		if time.Now().After(session.ExpiresAt) {
-			_ = s.store.DeleteSession(context.Background(), token)
-			return false
-		}
-		return true
-	}
-
-	s.sessionMu.RLock()
-	session, exists := s.sessions[token]
-	s.sessionMu.RUnlock()
-
-	if !exists {
+	if s.store == nil {
 		return false
 	}
-
-	// Check if expired
+	session, err := s.store.GetSession(context.Background(), token)
+	if err != nil {
+		s.logger.Printf("failed to load session: %v", err)
+		return false
+	}
+	if session == nil {
+		return false
+	}
 	if time.Now().After(session.ExpiresAt) {
-		s.sessionMu.Lock()
-		delete(s.sessions, token)
-		s.sessionMu.Unlock()
+		_ = s.store.DeleteSession(context.Background(), token)
 		return false
 	}
-
 	return true
 }
 
@@ -1916,20 +1872,12 @@ func (s *Server) cleanupExpiredSessions() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		if s.store != nil {
-			if err := s.store.CleanupExpiredSessions(context.Background()); err != nil {
-				s.logger.Printf("failed to clean sessions: %v", err)
-			}
+		if s.store == nil {
 			continue
 		}
-		now := time.Now()
-		s.sessionMu.Lock()
-		for token, session := range s.sessions {
-			if now.After(session.ExpiresAt) {
-				delete(s.sessions, token)
-			}
+		if err := s.store.CleanupExpiredSessions(context.Background()); err != nil {
+			s.logger.Printf("failed to clean sessions: %v", err)
 		}
-		s.sessionMu.Unlock()
 	}
 }
 

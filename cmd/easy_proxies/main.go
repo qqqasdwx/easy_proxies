@@ -27,7 +27,7 @@ func main() {
 		log.Fatalf("open database: %v", err)
 	}
 
-	cfg, err := config.LoadRuntime(context.Background(), st)
+	cfg, err := config.RuntimeFromStore(context.Background(), st)
 	if err != nil {
 		_ = st.Close()
 		log.Fatalf("load runtime config: %v", err)

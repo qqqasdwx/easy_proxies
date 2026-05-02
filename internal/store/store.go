@@ -139,7 +139,7 @@ type Node struct {
 	ID        int64     `json:"id"`
 	URI       string    `json:"uri"`
 	Name      string    `json:"name"`
-	Source    string    `json:"source"` // inline, nodes_file, subscription, manual
+	Source    string    `json:"source"` // manual or subscription
 	Port      uint16    `json:"port"`
 	Username  string    `json:"username,omitempty"`
 	Password  string    `json:"password,omitempty"`
@@ -241,8 +241,6 @@ type SubscriptionSource struct {
 
 // Node source constants (matching config.NodeSource values).
 const (
-	NodeSourceInline       = "inline"
-	NodeSourceFile         = "nodes_file"
 	NodeSourceSubscription = "subscription"
 	NodeSourceManual       = "manual"
 )
