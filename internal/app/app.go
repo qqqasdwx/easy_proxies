@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,11 +12,29 @@ import (
 	"easy_proxies/internal/boxmgr"
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
+	"easy_proxies/internal/store"
 	"easy_proxies/internal/subscription"
 )
 
 // Run builds the runtime components from config and blocks until shutdown.
 func Run(ctx context.Context, cfg *config.Config) error {
+	var dataStore store.Store
+	if cfg.DatabasePath != "" {
+		st, err := store.Open(cfg.DatabasePath)
+		if err != nil {
+			log.Printf("⚠️  SQLite store disabled: %v", err)
+		} else {
+			dataStore = st
+			defer dataStore.Close()
+			if err := syncStoreFromConfig(ctx, cfg, dataStore); err != nil {
+				log.Printf("⚠️  Failed to sync nodes to store: %v", err)
+			}
+			if err := applyStoreNodeState(ctx, cfg, dataStore); err != nil {
+				log.Printf("⚠️  Failed to apply store node state: %v", err)
+			}
+		}
+	}
+
 	// Build monitor config
 	proxyUsername := cfg.Listener.Username
 	proxyPassword := cfg.Listener.Password
@@ -35,7 +54,11 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 
 	// Create and start BoxManager
-	boxMgr := boxmgr.New(cfg, monitorCfg)
+	var boxOpts []boxmgr.Option
+	if dataStore != nil {
+		boxOpts = append(boxOpts, boxmgr.WithStore(dataStore))
+	}
+	boxMgr := boxmgr.New(cfg, monitorCfg, boxOpts...)
 	if err := boxMgr.Start(ctx); err != nil {
 		return fmt.Errorf("start box manager: %w", err)
 	}
@@ -96,5 +119,75 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		fmt.Println("Shutdown timeout exceeded, forcing exit")
 	}
 
+	return nil
+}
+
+func syncStoreFromConfig(ctx context.Context, cfg *config.Config, s store.Store) error {
+	if cfg == nil || s == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	existing, err := s.ListNodes(ctx, store.NodeFilter{})
+	if err != nil {
+		return fmt.Errorf("list store nodes: %w", err)
+	}
+	byURI := make(map[string]store.Node, len(existing))
+	for _, node := range existing {
+		byURI[node.URI] = node
+	}
+
+	var upserts []store.Node
+	for _, node := range cfg.Nodes {
+		source := string(node.Source)
+		if source == "" {
+			source = store.NodeSourceInline
+		}
+		enabled := true
+		if existingNode, ok := byURI[node.URI]; ok {
+			enabled = existingNode.Enabled
+		}
+		upserts = append(upserts, store.Node{
+			URI:      node.URI,
+			Name:     node.Name,
+			Source:   source,
+			Port:     node.Port,
+			Username: node.Username,
+			Password: node.Password,
+			Region:   "",
+			Country:  "",
+			Enabled:  enabled,
+		})
+	}
+	return s.BulkUpsertNodes(ctx, upserts)
+}
+
+func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store) error {
+	if cfg == nil || s == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	storeNodes, err := s.ListNodes(ctx, store.NodeFilter{})
+	if err != nil {
+		return fmt.Errorf("list store nodes: %w", err)
+	}
+	enabledByURI := make(map[string]bool, len(storeNodes))
+	for _, node := range storeNodes {
+		enabledByURI[node.URI] = node.Enabled
+	}
+
+	filtered := cfg.Nodes[:0]
+	for _, node := range cfg.Nodes {
+		if enabled, ok := enabledByURI[node.URI]; ok && !enabled {
+			continue
+		}
+		filtered = append(filtered, node)
+	}
+	cfg.Nodes = filtered
 	return nil
 }

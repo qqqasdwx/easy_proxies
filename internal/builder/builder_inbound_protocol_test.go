@@ -108,3 +108,41 @@ func TestBuildUsesConfiguredInboundProtocols(t *testing.T) {
 		t.Fatal("multi-port inbound not found")
 	}
 }
+
+func TestBuildSkipsDisabledNodes(t *testing.T) {
+	cfg := &config.Config{
+		Mode: "pool",
+		Listener: config.ListenerConfig{
+			Address:  "127.0.0.1",
+			Port:     2323,
+			Protocol: config.InboundProtocolMixed,
+		},
+		Pool: config.PoolConfig{
+			Mode:              "sequential",
+			FailureThreshold:  3,
+			BlacklistDuration: time.Hour,
+		},
+		Nodes: []config.NodeConfig{
+			{
+				Name:     "disabled-node",
+				URI:      "http://user:pass@disabled.example.com:8080",
+				Disabled: true,
+			},
+			{
+				Name: "enabled-node",
+				URI:  "http://user:pass@enabled.example.com:8080",
+			},
+		},
+	}
+
+	opts, err := Build(cfg)
+	if err != nil {
+		t.Fatalf("build options: %v", err)
+	}
+
+	for _, outbound := range opts.Outbounds {
+		if outbound.Tag == "disabled-node" {
+			t.Fatal("disabled node outbound was built")
+		}
+	}
+}

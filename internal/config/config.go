@@ -165,6 +165,7 @@ type NodeConfig struct {
 	Username string     `yaml:"username,omitempty" json:"username,omitempty"`
 	Password string     `yaml:"password,omitempty" json:"password,omitempty"`
 	Source   NodeSource `yaml:"-" json:"source,omitempty"` // Runtime only, not persisted
+	Disabled bool       `yaml:"-" json:"disabled,omitempty"`
 }
 
 // NodeKey returns a unique identifier for the node based on its URI.

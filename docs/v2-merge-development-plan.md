@@ -128,6 +128,8 @@ git merge --no-ff feat/v2-<stage-name>
 
 建议分支：`feat/v2-node-persistence`
 
+完成标记: done
+
 ### 目标
 
 把 V2 的手动节点、订阅节点持久化能力接入当前主线，同时保留 `nodes.txt` 兼容。
