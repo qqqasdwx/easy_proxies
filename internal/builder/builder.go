@@ -58,8 +58,15 @@ func Build(cfg *config.Config) (option.Options, error) {
 		regionMembers[region] = []string{}
 	}
 
-	totalNodes := len(cfg.Nodes)
-	for i, node := range cfg.Nodes {
+	activeNodes := make([]config.NodeConfig, 0, len(cfg.Nodes))
+	for _, node := range cfg.Nodes {
+		if !node.Disabled {
+			activeNodes = append(activeNodes, node)
+		}
+	}
+
+	totalNodes := len(activeNodes)
+	for i, node := range activeNodes {
 		if i > 0 && i%1000 == 0 {
 			log.Printf("⏳ Building nodes... %d/%d", i, totalNodes)
 		}
@@ -1388,6 +1395,9 @@ func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta)
 		log.Printf("🔌 Multi-Port Entry Points (%d nodes):", len(cfg.Nodes))
 		log.Println("")
 		for _, node := range cfg.Nodes {
+			if node.Disabled {
+				continue
+			}
 			var auth string
 			username := node.Username
 			password := node.Password

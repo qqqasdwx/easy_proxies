@@ -1195,6 +1195,7 @@ type nodePayload struct {
 	Port     uint16 `json:"port"`
 	Username string `json:"username"`
 	Password string `json:"password"`
+	Disabled bool   `json:"disabled"`
 }
 
 func (p nodePayload) toConfig() config.NodeConfig {
@@ -1204,6 +1205,7 @@ func (p nodePayload) toConfig() config.NodeConfig {
 		Port:     p.Port,
 		Username: p.Username,
 		Password: p.Password,
+		Disabled: p.Disabled,
 	}
 }
 

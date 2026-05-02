@@ -16,6 +16,7 @@ import (
 	"easy_proxies/internal/geoip"
 	"easy_proxies/internal/monitor"
 	"easy_proxies/internal/outbound/pool"
+	"easy_proxies/internal/store"
 
 	"github.com/sagernet/sing-box"
 	C "github.com/sagernet/sing-box/constant"
@@ -49,6 +50,11 @@ func WithLogger(l Logger) Option {
 	return func(m *Manager) { m.logger = l }
 }
 
+// WithStore enables optional SQLite-backed node state persistence.
+func WithStore(s store.Store) Option {
+	return func(m *Manager) { m.store = s }
+}
+
 // Manager owns the lifecycle of the active sing-box instance.
 type Manager struct {
 	mu sync.RWMutex
@@ -59,6 +65,7 @@ type Manager struct {
 	geoRouter     *geoip.Router
 	cfg           *config.Config
 	monitorCfg    monitor.Config
+	store         store.Store
 
 	drainTimeout      time.Duration
 	minAvailableNodes int
@@ -109,6 +116,15 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.baseCtx = ctx
 	cfg := m.cfg
 	m.mu.Unlock()
+
+	if m.store != nil {
+		if err := m.syncStoreFromConfig(ctx, cfg); err != nil {
+			m.logger.Warnf("failed to sync nodes to store: %v", err)
+		}
+		if err := m.applyStoreNodeState(ctx, cfg); err != nil {
+			m.logger.Warnf("failed to apply store node state: %v", err)
+		}
+	}
 
 	// Try to start, with automatic port conflict resolution
 	var instance *box.Box
@@ -471,7 +487,7 @@ func (m *Manager) createBox(ctx context.Context, cfg *config.Config) (*box.Box, 
 				if poolOpts, ok := ob.Options.(*pool.Options); ok {
 					poolOpts.Members = removeFromSlice(poolOpts.Members, badTag)
 					delete(poolOpts.Metadata, badTag)
-					
+
 					// If the pool is now empty, remove it to avoid another validation error
 					if len(poolOpts.Members) == 0 {
 						log.Printf("⚠️  Removing empty pool '%s'", ob.Tag)
@@ -692,14 +708,52 @@ var errConfigUnavailable = errors.New("config is not initialized")
 
 // ListConfigNodes returns a copy of all configured nodes.
 func (m *Manager) ListConfigNodes(ctx context.Context) ([]config.NodeConfig, error) {
-	_ = ctx
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	if m.cfg == nil {
 		return nil, errConfigUnavailable
 	}
-	return cloneNodes(m.cfg.Nodes), nil
+	if m.store == nil {
+		return cloneNodes(m.cfg.Nodes), nil
+	}
+	ctx = storeContext(ctx)
+
+	storeNodes, err := m.store.ListNodes(ctx, store.NodeFilter{})
+	if err != nil {
+		m.logger.Warnf("failed to list store nodes: %v", err)
+		return cloneNodes(m.cfg.Nodes), nil
+	}
+	storeByURI := make(map[string]store.Node, len(storeNodes))
+	for _, node := range storeNodes {
+		storeByURI[node.URI] = node
+	}
+
+	result := make([]config.NodeConfig, 0, len(m.cfg.Nodes)+len(storeNodes))
+	seen := make(map[string]struct{}, len(m.cfg.Nodes))
+	for _, node := range m.cfg.Nodes {
+		out := node
+		if storeNode, ok := storeByURI[node.URI]; ok {
+			out.Disabled = !storeNode.Enabled
+		}
+		result = append(result, out)
+		seen[node.URI] = struct{}{}
+	}
+	for _, node := range storeNodes {
+		if _, ok := seen[node.URI]; ok {
+			continue
+		}
+		result = append(result, config.NodeConfig{
+			Name:     node.Name,
+			URI:      node.URI,
+			Port:     node.Port,
+			Username: node.Username,
+			Password: node.Password,
+			Source:   config.NodeSource(node.Source),
+			Disabled: !node.Enabled,
+		})
+	}
+	return result, nil
 }
 
 // CreateNode adds a new node to the config and saves it.
@@ -736,6 +790,9 @@ func (m *Manager) CreateNode(ctx context.Context, node config.NodeConfig) (confi
 	if err := m.cfg.Save(); err != nil {
 		m.cfg.Nodes = m.cfg.Nodes[:len(m.cfg.Nodes)-1]
 		return config.NodeConfig{}, fmt.Errorf("save config: %w", err)
+	}
+	if err := m.upsertStoreNode(ctx, normalized); err != nil {
+		m.logger.Warnf("failed to sync created node to store: %v", err)
 	}
 	return normalized, nil
 }
@@ -775,6 +832,9 @@ func (m *Manager) UpdateNode(ctx context.Context, name string, node config.NodeC
 		m.cfg.Nodes[idx] = prev
 		return config.NodeConfig{}, fmt.Errorf("save config: %w", err)
 	}
+	if err := m.upsertStoreNode(ctx, normalized); err != nil {
+		m.logger.Warnf("failed to sync updated node to store: %v", err)
+	}
 	return normalized, nil
 }
 
@@ -804,6 +864,9 @@ func (m *Manager) DeleteNode(ctx context.Context, name string) error {
 	if err := m.cfg.Save(); err != nil {
 		m.cfg.Nodes = backup
 		return fmt.Errorf("save config: %w", err)
+	}
+	if err := m.deleteStoreNode(ctx, name); err != nil {
+		m.logger.Warnf("failed to delete node from store: %v", err)
 	}
 	return nil
 }
@@ -839,6 +902,14 @@ func (m *Manager) ReloadWithPortMap(newCfg *config.Config, portMap map[string]ui
 			return fmt.Errorf("normalize config with port map: %w", err)
 		}
 	}
+	if m.store != nil {
+		if err := m.syncStoreFromConfig(context.Background(), newCfg); err != nil {
+			m.logger.Warnf("failed to sync nodes to store: %v", err)
+		}
+		if err := m.applyStoreNodeState(context.Background(), newCfg); err != nil {
+			m.logger.Warnf("failed to apply store node state: %v", err)
+		}
+	}
 
 	return m.Reload(newCfg)
 }
@@ -851,6 +922,124 @@ func (m *Manager) CurrentPortMap() map[string]uint16 {
 		return nil
 	}
 	return m.cfg.BuildPortMap()
+}
+
+func (m *Manager) syncStoreFromConfig(ctx context.Context, cfg *config.Config) error {
+	if m.store == nil || cfg == nil {
+		return nil
+	}
+	ctx = storeContext(ctx)
+
+	existing, err := m.store.ListNodes(ctx, store.NodeFilter{})
+	if err != nil {
+		return fmt.Errorf("list store nodes: %w", err)
+	}
+	enabledByURI := make(map[string]bool, len(existing))
+	for _, node := range existing {
+		enabledByURI[node.URI] = node.Enabled
+	}
+
+	nodes := make([]store.Node, 0, len(cfg.Nodes))
+	for _, node := range cfg.Nodes {
+		source := string(node.Source)
+		if source == "" {
+			source = store.NodeSourceInline
+		}
+		enabled := !node.Disabled
+		if existingEnabled, ok := enabledByURI[node.URI]; ok {
+			enabled = existingEnabled
+		}
+		nodes = append(nodes, store.Node{
+			URI:      node.URI,
+			Name:     node.Name,
+			Source:   source,
+			Port:     node.Port,
+			Username: node.Username,
+			Password: node.Password,
+			Enabled:  enabled,
+		})
+	}
+	return m.store.BulkUpsertNodes(ctx, nodes)
+}
+
+func (m *Manager) applyStoreNodeState(ctx context.Context, cfg *config.Config) error {
+	if m.store == nil || cfg == nil {
+		return nil
+	}
+	ctx = storeContext(ctx)
+
+	storeNodes, err := m.store.ListNodes(ctx, store.NodeFilter{})
+	if err != nil {
+		return fmt.Errorf("list store nodes: %w", err)
+	}
+	enabledByURI := make(map[string]bool, len(storeNodes))
+	for _, node := range storeNodes {
+		enabledByURI[node.URI] = node.Enabled
+	}
+
+	filtered := cfg.Nodes[:0]
+	for _, node := range cfg.Nodes {
+		if enabled, ok := enabledByURI[node.URI]; ok && !enabled {
+			continue
+		}
+		filtered = append(filtered, node)
+	}
+	cfg.Nodes = filtered
+	return nil
+}
+
+func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) error {
+	if m.store == nil {
+		return nil
+	}
+	ctx = storeContext(ctx)
+
+	storeNode, err := m.store.GetNodeByURI(ctx, node.URI)
+	if err != nil {
+		return fmt.Errorf("lookup store node: %w", err)
+	}
+	if storeNode == nil {
+		return m.store.CreateNode(ctx, &store.Node{
+			URI:      node.URI,
+			Name:     node.Name,
+			Source:   string(node.Source),
+			Port:     node.Port,
+			Username: node.Username,
+			Password: node.Password,
+			Enabled:  !node.Disabled,
+		})
+	}
+
+	storeNode.Name = node.Name
+	storeNode.Source = string(node.Source)
+	storeNode.Port = node.Port
+	storeNode.Username = node.Username
+	storeNode.Password = node.Password
+	storeNode.Enabled = !node.Disabled
+	return m.store.UpdateNode(ctx, storeNode)
+}
+
+func (m *Manager) deleteStoreNode(ctx context.Context, name string) error {
+	if m.store == nil {
+		return nil
+	}
+	ctx = storeContext(ctx)
+
+	storeNode, err := m.store.GetNodeByName(ctx, name)
+	if err != nil {
+		return fmt.Errorf("lookup store node: %w", err)
+	}
+	if storeNode == nil {
+		return nil
+	}
+	return m.store.DeleteNode(ctx, storeNode.ID)
+}
+
+func storeContext(ctx context.Context) context.Context {
+	if ctx != nil {
+		return ctx
+	}
+	return context.Background()
 }
 
 // --- Helper functions ---
@@ -874,7 +1063,6 @@ func extractPortFromBindError(err error) uint16 {
 	}
 	return 0
 }
-
 
 // reassignConflictingPort finds the node using the conflicting port and assigns a new port.
 func reassignConflictingPort(cfg *config.Config, conflictPort uint16) bool {
