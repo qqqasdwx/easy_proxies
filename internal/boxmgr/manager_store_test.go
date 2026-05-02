@@ -2,6 +2,7 @@ package boxmgr
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -142,6 +143,41 @@ func TestDeleteNodeRemovesStoreOnlyNode(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("store-only node still exists: %+v", got)
+	}
+}
+
+func TestSubscriptionNodesAreReadOnlyForEditAndDelete(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	node := config.NodeConfig{
+		Name:   "sub-node",
+		URI:    "http://user:pass@sub.example.com:8080",
+		Source: config.NodeSourceSubscription,
+	}
+	if err := st.CreateNode(ctx, &store.Node{
+		URI:     node.URI,
+		Name:    node.Name,
+		Source:  store.NodeSourceSubscription,
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create subscription node: %v", err)
+	}
+
+	mgr := New(&config.Config{Nodes: []config.NodeConfig{node}}, monitor.Config{}, WithStore(st))
+	if _, err := mgr.UpdateNode(ctx, node.Name, config.NodeConfig{Name: "renamed", URI: node.URI}); !errors.Is(err, monitor.ErrNodeReadOnly) {
+		t.Fatalf("update error = %v, want read-only", err)
+	}
+	if err := mgr.DeleteNode(ctx, node.Name); !errors.Is(err, monitor.ErrNodeReadOnly) {
+		t.Fatalf("delete error = %v, want read-only", err)
 	}
 }
 
