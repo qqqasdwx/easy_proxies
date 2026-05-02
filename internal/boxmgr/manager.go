@@ -838,6 +838,56 @@ func (m *Manager) UpdateNode(ctx context.Context, name string, node config.NodeC
 	return normalized, nil
 }
 
+// SetNodeEnabled updates a node enabled flag in runtime state and optional store.
+// It intentionally does not rewrite config.yaml or nodes.txt.
+func (m *Manager) SetNodeEnabled(ctx context.Context, name string, enabled bool) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+
+	name = strings.TrimSpace(name)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.cfg == nil {
+		return errConfigUnavailable
+	}
+
+	idx := m.nodeIndexLocked(name)
+	storeNode, err := m.getStoreNodeByName(ctx, name)
+	if err != nil {
+		return err
+	}
+	if idx == -1 && storeNode == nil {
+		return monitor.ErrNodeNotFound
+	}
+
+	if storeNode != nil {
+		storeNode.Enabled = enabled
+		if err := m.store.UpdateNode(storeContext(ctx), storeNode); err != nil {
+			return fmt.Errorf("update store node: %w", err)
+		}
+	}
+
+	if idx != -1 {
+		m.cfg.Nodes[idx].Disabled = !enabled
+		return nil
+	}
+	if enabled && storeNode != nil {
+		m.cfg.Nodes = append(m.cfg.Nodes, config.NodeConfig{
+			Name:     storeNode.Name,
+			URI:      storeNode.URI,
+			Port:     storeNode.Port,
+			Username: storeNode.Username,
+			Password: storeNode.Password,
+			Source:   config.NodeSource(storeNode.Source),
+		})
+	}
+	return nil
+}
+
 // DeleteNode removes a node by name and saves the config.
 func (m *Manager) DeleteNode(ctx context.Context, name string) error {
 	if ctx != nil {
@@ -856,6 +906,11 @@ func (m *Manager) DeleteNode(ctx context.Context, name string) error {
 
 	idx := m.nodeIndexLocked(name)
 	if idx == -1 {
+		if storeNode, err := m.getStoreNodeByName(ctx, name); err != nil {
+			return err
+		} else if storeNode != nil {
+			return m.store.DeleteNode(storeContext(ctx), storeNode.ID)
+		}
 		return monitor.ErrNodeNotFound
 	}
 
@@ -1020,19 +1075,25 @@ func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) e
 }
 
 func (m *Manager) deleteStoreNode(ctx context.Context, name string) error {
-	if m.store == nil {
-		return nil
-	}
-	ctx = storeContext(ctx)
-
-	storeNode, err := m.store.GetNodeByName(ctx, name)
+	storeNode, err := m.getStoreNodeByName(ctx, name)
 	if err != nil {
-		return fmt.Errorf("lookup store node: %w", err)
+		return err
 	}
 	if storeNode == nil {
 		return nil
 	}
-	return m.store.DeleteNode(ctx, storeNode.ID)
+	return m.store.DeleteNode(storeContext(ctx), storeNode.ID)
+}
+
+func (m *Manager) getStoreNodeByName(ctx context.Context, name string) (*store.Node, error) {
+	if m.store == nil {
+		return nil, nil
+	}
+	storeNode, err := m.store.GetNodeByName(storeContext(ctx), name)
+	if err != nil {
+		return nil, fmt.Errorf("lookup store node: %w", err)
+	}
+	return storeNode, nil
 }
 
 func storeContext(ctx context.Context) context.Context {

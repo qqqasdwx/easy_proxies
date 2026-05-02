@@ -157,6 +157,8 @@ git merge --no-ff feat/v2-<stage-name>
 
 建议分支：`feat/v2-batch-node-api`
 
+完成标记: done
+
 ### 目标
 
 合并 V2 的批量启停、批量删除、导入能力。

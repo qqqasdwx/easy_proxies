@@ -61,3 +61,86 @@ func TestListConfigNodesIncludesStoreDisabledNodes(t *testing.T) {
 		t.Fatalf("disabled store node not returned: %+v", nodes)
 	}
 }
+
+func TestSetNodeEnabledDoesNotRewriteConfigSources(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	node := config.NodeConfig{
+		Name:   "inline-node",
+		URI:    "http://user:pass@example.com:8080",
+		Source: config.NodeSourceInline,
+	}
+	if err := st.CreateNode(ctx, &store.Node{
+		URI:     node.URI,
+		Name:    node.Name,
+		Source:  store.NodeSourceInline,
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create store node: %v", err)
+	}
+
+	mgr := New(&config.Config{Nodes: []config.NodeConfig{node}}, monitor.Config{}, WithStore(st))
+	if err := mgr.SetNodeEnabled(ctx, node.Name, false); err != nil {
+		t.Fatalf("disable node: %v", err)
+	}
+
+	nodes, err := mgr.ListConfigNodes(ctx)
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].Source != config.NodeSourceInline || !nodes[0].Disabled {
+		t.Fatalf("unexpected listed node: %+v", nodes)
+	}
+
+	storeNode, err := st.GetNodeByURI(ctx, node.URI)
+	if err != nil {
+		t.Fatalf("get store node: %v", err)
+	}
+	if storeNode == nil || storeNode.Enabled {
+		t.Fatalf("store node was not disabled: %+v", storeNode)
+	}
+}
+
+func TestDeleteNodeRemovesStoreOnlyNode(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	storeNode := &store.Node{
+		URI:     "http://user:pass@store-only.example.com:8080",
+		Name:    "store-only",
+		Source:  store.NodeSourceManual,
+		Enabled: false,
+	}
+	if err := st.CreateNode(ctx, storeNode); err != nil {
+		t.Fatalf("create store-only node: %v", err)
+	}
+
+	mgr := New(&config.Config{}, monitor.Config{}, WithStore(st))
+	if err := mgr.DeleteNode(ctx, storeNode.Name); err != nil {
+		t.Fatalf("delete store-only node: %v", err)
+	}
+	got, err := st.GetNodeByURI(ctx, storeNode.URI)
+	if err != nil {
+		t.Fatalf("get deleted store node: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("store-only node still exists: %+v", got)
+	}
+}

@@ -38,6 +38,7 @@ type NodeManager interface {
 	ListConfigNodes(ctx context.Context) ([]config.NodeConfig, error)
 	CreateNode(ctx context.Context, node config.NodeConfig) (config.NodeConfig, error)
 	UpdateNode(ctx context.Context, name string, node config.NodeConfig) (config.NodeConfig, error)
+	SetNodeEnabled(ctx context.Context, name string, enabled bool) error
 	DeleteNode(ctx context.Context, name string) error
 	TriggerReload(ctx context.Context) error
 }
@@ -122,11 +123,14 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/settings", s.withAuth(s.handleSettings))
 	mux.HandleFunc("/api/nodes", s.withAuth(s.handleNodes))
 	mux.HandleFunc("/api/nodes/config", s.withAuth(s.handleConfigNodes))
+	mux.HandleFunc("/api/nodes/config/batch-toggle", s.withAuth(s.handleConfigNodesBatchToggle))
+	mux.HandleFunc("/api/nodes/config/batch-delete", s.withAuth(s.handleConfigNodesBatchDelete))
 	mux.HandleFunc("/api/nodes/config/", s.withAuth(s.handleConfigNodeItem))
 	mux.HandleFunc("/api/nodes/probe-all", s.withAuth(s.handleProbeAll))
 	mux.HandleFunc("/api/nodes/", s.withAuth(s.handleNodeAction))
 	mux.HandleFunc("/api/debug", s.withAuth(s.handleDebug))
 	mux.HandleFunc("/api/export", s.withAuth(s.handleExport))
+	mux.HandleFunc("/api/import", s.withAuth(s.handleImport))
 	mux.HandleFunc("/api/subscription/status", s.withAuth(s.handleSubscriptionStatus))
 	mux.HandleFunc("/api/subscription/refresh", s.withAuth(s.handleSubscriptionRefresh))
 	mux.HandleFunc("/api/subscription/config", s.withAuth(s.handleSubscriptionConfig))
@@ -819,6 +823,73 @@ func exportProxyURIsForProtocol(protocol, scheme, auth, address string, port uin
 	return nil
 }
 
+// handleImport imports proxy URI lines into config nodes.
+func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.ensureNodeManager(w) {
+		return
+	}
+
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "请求格式错误"})
+		return
+	}
+
+	content := strings.TrimSpace(req.Content)
+	if content == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "导入内容为空"})
+		return
+	}
+
+	var imported int
+	var errs []string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !config.IsProxyURI(line) {
+			errs = append(errs, fmt.Sprintf("无效的代理 URI: %s", truncateString(line, 80)))
+			continue
+		}
+
+		name := config.ExtractNodeName(line)
+		if name == "" {
+			name = fmt.Sprintf("imported-%d", imported+1)
+		}
+		if _, err := s.nodeMgr.CreateNode(r.Context(), config.NodeConfig{Name: name, URI: line}); err != nil {
+			errs = append(errs, fmt.Sprintf("添加节点 %q 失败: %v", name, err))
+			continue
+		}
+		imported++
+	}
+
+	result := map[string]any{
+		"message":     fmt.Sprintf("成功导入 %d 个节点，请点击重载使配置生效", imported),
+		"imported":    imported,
+		"need_reload": imported > 0,
+	}
+	if len(errs) > 0 {
+		result["errors"] = errs
+	}
+	writeJSON(w, result)
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // handleSettings handles GET/PUT for dynamic settings (external_ip, probe_target, skip_cert_verify, log).
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -1269,6 +1340,32 @@ func (s *Server) handleConfigNodeItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, map[string]any{"node": node, "message": "节点已更新，请点击重载使配置生效"})
+	case http.MethodPatch:
+		var payload struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "请求格式错误"})
+			return
+		}
+		if payload.Enabled == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "缺少 enabled 字段"})
+			return
+		}
+		if err := s.nodeMgr.SetNodeEnabled(r.Context(), nodeName, *payload.Enabled); err != nil {
+			s.respondNodeError(w, err)
+			return
+		}
+		action := "启用"
+		if !*payload.Enabled {
+			action = "禁用"
+		}
+		writeJSON(w, map[string]any{
+			"message":     fmt.Sprintf("节点已%s，请点击重载使配置生效", action),
+			"need_reload": true,
+		})
 	case http.MethodDelete:
 		if err := s.nodeMgr.DeleteNode(r.Context(), nodeName); err != nil {
 			s.respondNodeError(w, err)
@@ -1278,6 +1375,113 @@ func (s *Server) handleConfigNodeItem(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+// handleConfigNodesBatchToggle handles batch enable/disable for config nodes.
+func (s *Server) handleConfigNodesBatchToggle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.ensureNodeManager(w) {
+		return
+	}
+
+	var payload struct {
+		Names   []string `json:"names"`
+		Enabled bool     `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "请求格式错误"})
+		return
+	}
+	if len(payload.Names) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "节点列表为空"})
+		return
+	}
+
+	var errs []string
+	success := 0
+	for _, name := range payload.Names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			errs = append(errs, "空节点名称")
+			continue
+		}
+		if err := s.nodeMgr.SetNodeEnabled(r.Context(), name, payload.Enabled); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+		success++
+	}
+
+	action := "启用"
+	if !payload.Enabled {
+		action = "禁用"
+	}
+	result := map[string]any{
+		"message":     fmt.Sprintf("成功%s %d 个节点，请点击重载使配置生效", action, success),
+		"success":     success,
+		"total":       len(payload.Names),
+		"need_reload": success > 0,
+	}
+	if len(errs) > 0 {
+		result["errors"] = errs
+	}
+	writeJSON(w, result)
+}
+
+// handleConfigNodesBatchDelete handles batch deletion for config nodes.
+func (s *Server) handleConfigNodesBatchDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.ensureNodeManager(w) {
+		return
+	}
+
+	var payload struct {
+		Names []string `json:"names"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "请求格式错误"})
+		return
+	}
+	if len(payload.Names) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "节点列表为空"})
+		return
+	}
+
+	var errs []string
+	success := 0
+	for _, name := range payload.Names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			errs = append(errs, "空节点名称")
+			continue
+		}
+		if err := s.nodeMgr.DeleteNode(r.Context(), name); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+		success++
+	}
+
+	result := map[string]any{
+		"message":     fmt.Sprintf("成功删除 %d 个节点，请点击重载使配置生效", success),
+		"success":     success,
+		"total":       len(payload.Names),
+		"need_reload": success > 0,
+	}
+	if len(errs) > 0 {
+		result["errors"] = errs
+	}
+	writeJSON(w, result)
 }
 
 // handleReload triggers a configuration reload.
