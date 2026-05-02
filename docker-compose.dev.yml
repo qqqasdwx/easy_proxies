@@ -8,13 +8,14 @@ services:
     image: easy_proxies:dev
     container_name: easy_proxies_dev
     restart: unless-stopped
-    # macOS 不支持 network_mode: host，必须使用端口映射
+    environment:
+      MANAGEMENT_PORT: ${MANAGEMENT_PORT:-9091}
+      MANAGEMENT_PASSWORD: ${MANAGEMENT_PASSWORD:-}
     ports:
-      - "2323:2323"       # Pool 入口
-      - "9091:9091"       # WebUI
-      - "24000-24100:24000-24100"  # Multi-port
+      - "${MANAGEMENT_PORT:-9091}:${MANAGEMENT_PORT:-9091}"
+      # Optional proxy listener ports for pool/hybrid and multi-port modes.
+      # - "2323:2323"
+      # - "24000-24100:24000-24100"
     volumes:
-      - ./config.yaml:/etc/easy_proxies/config.yaml
-      - ./nodes.txt:/etc/easy_proxies/nodes.txt
+      - ./data:/app/data
       - ./logs:/app/logs
-      - ./data:/etc/easy_proxies/data

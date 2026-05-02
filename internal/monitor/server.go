@@ -66,7 +66,7 @@ type SubscriptionStatus struct {
 	LastError     string    `json:"last_error,omitempty"`
 	RefreshCount  int       `json:"refresh_count"`
 	IsRefreshing  bool      `json:"is_refreshing"`
-	NodesModified bool      `json:"nodes_modified"` // True if nodes.txt was modified since last refresh
+	NodesModified bool      `json:"nodes_modified"` // True if the configured nodes file was modified since last refresh
 }
 
 // Server exposes HTTP endpoints for monitoring.
@@ -1008,7 +1008,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"enabled":      cfg.ManagementEnabled(),
 				"listen":       cfg.Management.Listen,
 				"probe_target": cfg.Management.ProbeTarget,
-				"password":     cfg.Management.Password,
 			}
 			resp["subscription_refresh"] = map[string]any{
 				"enabled":              cfg.SubscriptionRefresh.Enabled,
@@ -1059,7 +1058,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				Enabled     *bool  `json:"enabled,omitempty"`
 				Listen      string `json:"listen"`
 				ProbeTarget string `json:"probe_target"`
-				Password    string `json:"password"`
 			} `json:"management,omitempty"`
 			Log *struct {
 				Output     string `json:"output"`
@@ -1168,7 +1166,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				if req.Management.ProbeTarget != "" {
 					s.cfgSrc.Management.ProbeTarget = req.Management.ProbeTarget
 				}
-				s.cfgSrc.Management.Password = req.Management.Password
 			}
 			if req.GeoIP != nil {
 				s.cfgSrc.GeoIP.DatabasePath = req.GeoIP.DatabasePath

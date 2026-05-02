@@ -185,17 +185,35 @@ func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store)
 	if err != nil {
 		return fmt.Errorf("list store nodes: %w", err)
 	}
-	enabledByURI := make(map[string]bool, len(storeNodes))
+	storeByURI := make(map[string]store.Node, len(storeNodes))
 	for _, node := range storeNodes {
-		enabledByURI[node.URI] = node.Enabled
+		storeByURI[node.URI] = node
 	}
 
+	seen := make(map[string]struct{}, len(cfg.Nodes))
 	filtered := cfg.Nodes[:0]
 	for _, node := range cfg.Nodes {
-		if enabled, ok := enabledByURI[node.URI]; ok && !enabled {
+		seen[node.URI] = struct{}{}
+		if storeNode, ok := storeByURI[node.URI]; ok && !storeNode.Enabled {
 			continue
 		}
 		filtered = append(filtered, node)
+	}
+	for _, node := range storeNodes {
+		if !node.Enabled {
+			continue
+		}
+		if _, ok := seen[node.URI]; ok {
+			continue
+		}
+		filtered = append(filtered, config.NodeConfig{
+			Name:     node.Name,
+			URI:      node.URI,
+			Port:     node.Port,
+			Username: node.Username,
+			Password: node.Password,
+			Source:   config.NodeSource(node.Source),
+		})
 	}
 	cfg.Nodes = filtered
 	return nil

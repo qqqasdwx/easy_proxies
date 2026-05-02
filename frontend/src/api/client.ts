@@ -117,7 +117,6 @@ interface RawSettings {
     enabled?: boolean
     listen?: string
     probe_target?: string
-    password?: string
   }
   subscription_refresh?: {
     enabled?: boolean
@@ -378,7 +377,6 @@ export async function updateSettings(settings: SettingsData): Promise<SettingsUp
         enabled: settings.management_enabled,
         listen: settings.management_listen,
         probe_target: settings.management_probe_target,
-        password: settings.management_password,
       },
       geoip: {
         enabled: settings.geoip_enabled,
@@ -434,7 +432,6 @@ function normalizeSettings(raw: RawSettings, sub: SubscriptionConfigResponse): S
     management_enabled: raw.management?.enabled ?? true,
     management_listen: raw.management?.listen || '0.0.0.0:9091',
     management_probe_target: raw.management?.probe_target || raw.probe_target || '',
-    management_password: raw.management?.password || '',
     management_health_check_interval: '5m0s',
 
     sub_refresh_enabled: sub.enabled ?? raw.subscription_refresh?.enabled ?? false,

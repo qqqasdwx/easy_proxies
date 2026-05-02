@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -50,9 +49,9 @@ type Manager struct {
 	refreshMu     sync.Mutex // prevents concurrent refreshes
 	manualRefresh chan struct{}
 
-	// Track nodes.txt content hash to detect modifications
-	lastSubHash      string    // Hash of nodes.txt content after last subscription refresh
-	lastNodesModTime time.Time // Last known modification time of nodes.txt
+	// Track legacy nodes_file content hash to detect modifications when configured.
+	lastSubHash      string
+	lastNodesModTime time.Time
 }
 
 // New creates a SubscriptionManager.
@@ -346,24 +345,34 @@ func (m *Manager) doRefresh() {
 
 	m.logger.Infof("fetched %d nodes from subscriptions", len(nodes))
 
-	// Write subscription nodes to nodes.txt
-	nodesFilePath := m.getNodesFilePath()
-	if err := m.writeNodesToFile(nodesFilePath, nodes); err != nil {
-		m.logger.Errorf("failed to write nodes.txt: %v", err)
-		m.mu.Lock()
-		m.status.LastError = fmt.Sprintf("write nodes.txt: %v", err)
-		m.status.LastRefresh = time.Now()
-		m.mu.Unlock()
-		return
+	for idx := range nodes {
+		nodes[idx].Source = config.NodeSourceSubscription
 	}
-	m.logger.Infof("written %d nodes to %s", len(nodes), nodesFilePath)
+
+	// Write subscription nodes only when a legacy nodes_file is explicitly configured.
+	nodesFilePath := m.getNodesFilePath()
+	if nodesFilePath != "" {
+		if err := m.writeNodesToFile(nodesFilePath, nodes); err != nil {
+			m.logger.Errorf("failed to write nodes file: %v", err)
+			m.mu.Lock()
+			m.status.LastError = fmt.Sprintf("write nodes file: %v", err)
+			m.status.LastRefresh = time.Now()
+			m.mu.Unlock()
+			return
+		}
+		m.logger.Infof("written %d nodes to %s", len(nodes), nodesFilePath)
+	}
 
 	// Update hash and mod time after writing
 	newHash := m.computeNodesHash(nodes)
 	m.mu.Lock()
 	m.lastSubHash = newHash
-	if info, err := os.Stat(nodesFilePath); err == nil {
-		m.lastNodesModTime = info.ModTime()
+	if nodesFilePath != "" {
+		if info, err := os.Stat(nodesFilePath); err == nil {
+			m.lastNodesModTime = info.ModTime()
+		} else {
+			m.lastNodesModTime = time.Now()
+		}
 	} else {
 		m.lastNodesModTime = time.Now()
 	}
@@ -395,12 +404,12 @@ func (m *Manager) doRefresh() {
 	m.logger.Infof("subscription refresh completed, %d nodes active", len(nodes))
 }
 
-// getNodesFilePath returns the path to nodes.txt.
+// getNodesFilePath returns the explicitly configured legacy nodes file path.
 func (m *Manager) getNodesFilePath() string {
 	if m.baseCfg.NodesFile != "" {
 		return m.baseCfg.NodesFile
 	}
-	return filepath.Join(filepath.Dir(m.baseCfg.FilePath()), "nodes.txt")
+	return ""
 }
 
 // writeNodesToFile writes nodes to a file (one URI per line).
@@ -427,7 +436,7 @@ func (m *Manager) computeNodesHash(nodes []config.NodeConfig) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// CheckNodesModified checks if nodes.txt has been modified since last refresh.
+// CheckNodesModified checks if the legacy nodes file has been modified since last refresh.
 // Uses file modification time as a fast path to avoid unnecessary file reads.
 func (m *Manager) CheckNodesModified() bool {
 	m.mu.RLock()

@@ -16,6 +16,65 @@ func writeTestConfig(t *testing.T, content string) string {
 	return path
 }
 
+func clearManagementEnv(t *testing.T) {
+	t.Helper()
+	names := []string{
+		EnvManagementPort,
+		EnvManagementPassword,
+	}
+	for _, name := range names {
+		oldValue, hadValue := os.LookupEnv(name)
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("unset %s: %v", name, err)
+		}
+		t.Cleanup(func() {
+			if hadValue {
+				_ = os.Setenv(name, oldValue)
+			} else {
+				_ = os.Unsetenv(name)
+			}
+		})
+	}
+}
+
+func TestLoadMissingConfigUsesManagementOnlyDefaults(t *testing.T) {
+	clearManagementEnv(t)
+
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatalf("load missing config: %v", err)
+	}
+	if len(cfg.Nodes) != 0 {
+		t.Fatalf("nodes = %d, want 0", len(cfg.Nodes))
+	}
+	if !cfg.ManagementEnabled() {
+		t.Fatal("management should be enabled by default")
+	}
+	if cfg.Management.Listen != "0.0.0.0:9091" {
+		t.Fatalf("management listen = %q, want 0.0.0.0:9091", cfg.Management.Listen)
+	}
+	if cfg.DatabasePath != filepath.Join("data", "data.db") {
+		t.Fatalf("database path = %q, want data/data.db", cfg.DatabasePath)
+	}
+}
+
+func TestManagementEnvOverrides(t *testing.T) {
+	clearManagementEnv(t)
+	t.Setenv(EnvManagementPort, "19091")
+	t.Setenv(EnvManagementPassword, "secret")
+
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatalf("load missing config: %v", err)
+	}
+	if cfg.Management.Listen != "0.0.0.0:19091" {
+		t.Fatalf("management listen = %q, want 0.0.0.0:19091", cfg.Management.Listen)
+	}
+	if cfg.Management.Password != "secret" {
+		t.Fatal("management password was not read from environment")
+	}
+}
+
 func TestLoadInboundProtocolDefaultsToMixed(t *testing.T) {
 	path := writeTestConfig(t, `
 mode: pool

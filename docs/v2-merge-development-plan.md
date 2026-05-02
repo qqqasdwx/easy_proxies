@@ -281,6 +281,38 @@ docker build -t easy_proxies:merge-v2 .
 - 手动 blacklist 和 release。
 - 日志写文件和 WebUI 日志查看。
 
+## 阶段 9：无配置文件管理端启动
+
+建议分支：`feat/env-only-management`
+
+完成标记: done
+
+### 目标
+
+- 新部署不再依赖 `config.yaml` 或 `nodes.txt`。
+- 默认只启动 management WebUI/API，监听 `0.0.0.0:9091`。
+- Docker 可通过 `MANAGEMENT_PORT` 修改管理端口。
+- Docker 可通过 `MANAGEMENT_PASSWORD` 设置管理密码。
+- management password 不作为配置项出现，不从配置文件读取，不在 Settings API 和 WebUI 中返回或保存。
+
+### 任务
+
+- 配置加载允许缺省文件和空节点。
+- SQLite 成为 WebUI 节点的默认持久化来源。
+- 无节点时跳过 sing-box 实例创建，只启动管理端。
+- 订阅刷新默认写入运行配置和 SQLite，仅在显式 `nodes_file` 时写文件。
+- Dockerfile、entrypoint、Compose 和 README 改为无 `config.yaml`/`nodes.txt` 挂载。
+
+### 验收
+
+- `go test ./...`
+- `npm run lint --prefix frontend`
+- `npm run build --prefix frontend`
+- `docker compose config`
+- `docker build -t easy_proxies:env-only-test .`
+- 无配置文件本地启动只监听 management。
+- 无配置文件容器启动可通过环境变量改 management 端口。
+
 ## 不建议迁移的 V2 实现
 
 - V2 的 `builder` 整体实现：会丢 TUIC、Hysteria2 port hopping 等当前能力。

@@ -145,6 +145,38 @@ func TestDeleteNodeRemovesStoreOnlyNode(t *testing.T) {
 	}
 }
 
+func TestApplyStoreNodeStateAddsEnabledStoreNodes(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	storeNode := &store.Node{
+		URI:     "http://user:pass@store.example.com:8080",
+		Name:    "store-node",
+		Source:  store.NodeSourceManual,
+		Enabled: true,
+	}
+	if err := st.CreateNode(ctx, storeNode); err != nil {
+		t.Fatalf("create store node: %v", err)
+	}
+
+	cfg := &config.Config{}
+	mgr := New(cfg, monitor.Config{}, WithStore(st))
+	if err := mgr.applyStoreNodeState(ctx, cfg); err != nil {
+		t.Fatalf("apply store node state: %v", err)
+	}
+	if len(cfg.Nodes) != 1 || cfg.Nodes[0].Name != "store-node" {
+		t.Fatalf("cfg nodes = %+v, want store node", cfg.Nodes)
+	}
+}
+
 func TestRestoreAndFlushTrafficStats(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
