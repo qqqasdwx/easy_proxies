@@ -99,6 +99,8 @@ git merge --no-ff feat/v2-<stage-name>
 
 建议分支：`feat/v2-sqlite-store`
 
+完成标记: done
+
 ### 目标
 
 引入可选 SQLite store，用于节点、统计、会话和订阅状态持久化，但不立即替换现有文件模型。

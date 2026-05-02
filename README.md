@@ -75,6 +75,7 @@ Open `http://localhost:9091` in your browser.
 
 ```yaml
 mode: pool
+database_path: data/data.db
 
 listener:
   address: 0.0.0.0
@@ -105,6 +106,8 @@ nodes_file: nodes.txt
 ### Full Config Reference
 
 See [config.example.yaml](config.example.yaml) for the full documented configuration with all available options.
+
+`database_path` points to the optional SQLite store. The store layer is available for persistence features, while the current `config.yaml` and `nodes.txt` sources remain compatible.
 
 ## GeoIP Region Routing
 

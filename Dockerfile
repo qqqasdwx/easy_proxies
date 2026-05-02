@@ -12,7 +12,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates gosu \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -u 10001 easy \
-    && mkdir -p /etc/easy_proxies \
+    && mkdir -p /etc/easy_proxies/data \
     && chown -R easy:easy /etc/easy_proxies
 WORKDIR /app
 COPY --from=builder /src/easy_proxies /usr/local/bin/easy_proxies

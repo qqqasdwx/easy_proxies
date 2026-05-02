@@ -17,12 +17,13 @@ func writeTestConfig(t *testing.T, content string) string {
 }
 
 func TestLoadInboundProtocolDefaultsToMixed(t *testing.T) {
-	cfg, err := Load(writeTestConfig(t, `
+	path := writeTestConfig(t, `
 mode: pool
 nodes:
   - name: node-1
     uri: http://user:pass@example.com:8080
-`))
+`)
+	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -32,6 +33,11 @@ nodes:
 	}
 	if cfg.MultiPort.Protocol != InboundProtocolMixed {
 		t.Fatalf("multi-port protocol = %q, want %q", cfg.MultiPort.Protocol, InboundProtocolMixed)
+	}
+
+	wantDatabasePath := filepath.Join(filepath.Dir(path), "data", "data.db")
+	if cfg.DatabasePath != wantDatabasePath {
+		t.Fatalf("database path = %q, want %q", cfg.DatabasePath, wantDatabasePath)
 	}
 }
 
