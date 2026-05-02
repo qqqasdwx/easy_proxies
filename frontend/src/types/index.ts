@@ -126,8 +126,6 @@ export interface SettingsData {
   geoip_auto_update_enabled: boolean
   geoip_auto_update_interval: string
 
-  // Subscriptions
-  subscriptions: string[]
 }
 
 export interface SettingsUpdateResponse {
@@ -188,6 +186,29 @@ export interface SubscriptionStatus {
   refresh_count?: number
   is_refreshing?: boolean
   message?: string
+}
+
+export interface SubscriptionSource {
+  id: number
+  name: string
+  url: string
+  enabled: boolean
+  auto_update: boolean
+  interval: string
+  last_refresh?: string
+  next_refresh?: string
+  node_count: number
+  last_error?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface SubscriptionSourcePayload {
+  name: string
+  url: string
+  enabled: boolean
+  auto_update: boolean
+  interval: string
 }
 
 // ---- SSE Probe types ----

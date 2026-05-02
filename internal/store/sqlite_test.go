@@ -195,3 +195,72 @@ func TestStoreStatsSessionAndSubscriptionStatus(t *testing.T) {
 		t.Fatalf("unexpected subscription status: %+v", gotStatus)
 	}
 }
+
+func TestSubscriptionSourceCRUDAndNodeFilter(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	source := &SubscriptionSource{
+		Name:       "primary",
+		URL:        "https://example.com/sub",
+		Enabled:    true,
+		AutoUpdate: true,
+		Interval:   30 * time.Minute,
+	}
+	if err := st.CreateSubscriptionSource(ctx, source); err != nil {
+		t.Fatalf("create subscription source: %v", err)
+	}
+	if source.ID == 0 {
+		t.Fatal("subscription source ID was not populated")
+	}
+
+	got, err := st.GetSubscriptionSource(ctx, source.ID)
+	if err != nil {
+		t.Fatalf("get subscription source: %v", err)
+	}
+	if got == nil || got.URL != source.URL || !got.AutoUpdate {
+		t.Fatalf("unexpected subscription source: %+v", got)
+	}
+
+	got.Name = "renamed"
+	got.AutoUpdate = false
+	got.NodeCount = 2
+	if err := st.UpdateSubscriptionSource(ctx, got); err != nil {
+		t.Fatalf("update subscription source: %v", err)
+	}
+	updated, err := st.GetSubscriptionSource(ctx, source.ID)
+	if err != nil {
+		t.Fatalf("get updated subscription source: %v", err)
+	}
+	if updated.Name != "renamed" || updated.AutoUpdate || updated.NodeCount != 2 {
+		t.Fatalf("updated subscription source = %+v", updated)
+	}
+
+	if err := st.CreateNode(ctx, &Node{
+		URI:            "http://user:pass@sub.example.com:8080",
+		Name:           "sub-node",
+		Source:         NodeSourceSubscription,
+		SubscriptionID: source.ID,
+		Enabled:        true,
+	}); err != nil {
+		t.Fatalf("create subscription node: %v", err)
+	}
+	nodes, err := st.ListNodes(ctx, NodeFilter{Source: NodeSourceSubscription, SubscriptionID: source.ID})
+	if err != nil {
+		t.Fatalf("list subscription nodes: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].SubscriptionID != source.ID {
+		t.Fatalf("filtered nodes = %+v", nodes)
+	}
+
+	if err := st.DeleteSubscriptionSource(ctx, source.ID); err != nil {
+		t.Fatalf("delete subscription source: %v", err)
+	}
+	got, err = st.GetSubscriptionSource(ctx, source.ID)
+	if err != nil {
+		t.Fatalf("get deleted subscription source: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("deleted subscription source still exists: %+v", got)
+	}
+}
