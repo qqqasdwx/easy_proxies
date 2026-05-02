@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"easy_proxies/internal/store"
 
 	"gopkg.in/yaml.v3"
 )
@@ -124,6 +127,8 @@ const (
 	EnvManagementPassword = "MANAGEMENT_PASSWORD"
 )
 
+const runtimeConfigSettingKey = "runtime_config"
+
 // NormalizeInboundProtocol normalizes inbound protocol aliases and validates the value.
 func NormalizeInboundProtocol(value string) (string, error) {
 	protocol := strings.ToLower(strings.TrimSpace(value))
@@ -161,6 +166,64 @@ func (c *Config) normalizeDatabasePath() {
 	if c.filePath != "" && !filepath.IsAbs(c.DatabasePath) {
 		c.DatabasePath = filepath.Join(filepath.Dir(c.filePath), c.DatabasePath)
 	}
+}
+
+// Default returns the built-in runtime defaults without reading config files.
+func Default() (*Config, error) {
+	var cfg Config
+	if err := cfg.NormalizeWithPortMap(nil); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// LoadRuntime loads runtime settings from SQLite and applies defaults plus env overrides.
+func LoadRuntime(ctx context.Context, st store.Store) (*Config, error) {
+	cfg, err := Default()
+	if err != nil {
+		return nil, err
+	}
+	if st == nil {
+		return cfg, nil
+	}
+	raw, ok, err := st.GetAppSetting(ctx, runtimeConfigSettingKey)
+	if err != nil {
+		return nil, err
+	}
+	if ok && strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), cfg); err != nil {
+			return nil, fmt.Errorf("decode runtime config from database: %w", err)
+		}
+	}
+	cfg.NodesFile = ""
+	cfg.Subscriptions = nil
+	cfg.Nodes = nil
+	cfg.SetFilePath("")
+	if err := cfg.NormalizeWithPortMap(nil); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// SaveRuntime persists runtime settings to SQLite. Management.Password is intentionally omitted.
+func SaveRuntime(ctx context.Context, st store.Store, cfg *Config) error {
+	if st == nil {
+		return errors.New("store is nil")
+	}
+	if cfg == nil {
+		return errors.New("config is nil")
+	}
+	saveCfg := *cfg
+	saveCfg.Nodes = nil
+	saveCfg.NodesFile = ""
+	saveCfg.Subscriptions = nil
+	saveCfg.filePath = ""
+	saveCfg.Management.Password = ""
+	data, err := json.Marshal(&saveCfg)
+	if err != nil {
+		return fmt.Errorf("encode runtime config: %w", err)
+	}
+	return st.SetAppSetting(ctx, runtimeConfigSettingKey, string(data))
 }
 
 // NodeConfig describes a single upstream proxy endpoint expressed as URI.

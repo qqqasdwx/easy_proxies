@@ -17,6 +17,7 @@ import (
 	"easy_proxies/internal/boxmgr"
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
+	"easy_proxies/internal/store"
 )
 
 // Logger defines logging interface.
@@ -34,6 +35,11 @@ func WithLogger(l Logger) Option {
 	return func(m *Manager) { m.logger = l }
 }
 
+// WithStore enables SQLite-backed subscription status and source loading.
+func WithStore(s store.Store) Option {
+	return func(m *Manager) { m.store = s }
+}
+
 // Manager handles periodic subscription refresh.
 type Manager struct {
 	mu sync.RWMutex
@@ -41,6 +47,7 @@ type Manager struct {
 	baseCfg    *config.Config
 	boxMgr     *boxmgr.Manager
 	logger     Logger
+	store      store.Store
 	httpClient *http.Client // Custom HTTP client with connection pooling
 
 	status        monitor.SubscriptionStatus
@@ -102,7 +109,7 @@ func (m *Manager) Start() {
 		m.logger.Infof("subscription refresh disabled")
 		return
 	}
-	if len(m.baseCfg.Subscriptions) == 0 {
+	if len(m.subscriptionURLs()) == 0 {
 		m.logger.Infof("no subscriptions configured, refresh disabled")
 		return
 	}
@@ -135,8 +142,24 @@ func (m *Manager) UpdateConfig(urls []string, enabled bool, interval time.Durati
 	}
 	m.mu.Unlock()
 
-	// Persist to config.yaml
-	if err := m.baseCfg.SaveSettings(); err != nil {
+	if m.store != nil {
+		sources := make([]store.SubscriptionSource, 0, len(urls))
+		for idx, u := range urls {
+			sources = append(sources, store.SubscriptionSource{
+				Name:       fmt.Sprintf("subscription-%d", idx+1),
+				URL:        u,
+				Enabled:    true,
+				AutoUpdate: enabled,
+				Interval:   interval,
+			})
+		}
+		if err := m.store.ReplaceSubscriptionSources(context.Background(), sources); err != nil {
+			m.logger.Errorf("failed to save subscription sources: %v", err)
+		}
+		if err := config.SaveRuntime(context.Background(), m.store, m.baseCfg); err != nil {
+			m.logger.Errorf("failed to save runtime config: %v", err)
+		}
+	} else if err := m.baseCfg.SaveSettings(); err != nil {
 		m.logger.Errorf("failed to save subscription config: %v", err)
 	}
 
@@ -507,7 +530,7 @@ func (m *Manager) fetchAllSubscriptions() ([]config.NodeConfig, error) {
 		timeout = 30 * time.Second
 	}
 
-	for _, subURL := range m.baseCfg.Subscriptions {
+	for _, subURL := range m.subscriptionURLs() {
 		nodes, err := m.fetchSubscription(subURL, timeout)
 		if err != nil {
 			m.logger.Warnf("failed to fetch %s: %v", subURL, err)
@@ -523,6 +546,27 @@ func (m *Manager) fetchAllSubscriptions() ([]config.NodeConfig, error) {
 	}
 
 	return allNodes, nil
+}
+
+func (m *Manager) subscriptionURLs() []string {
+	m.mu.RLock()
+	urls := append([]string(nil), m.baseCfg.Subscriptions...)
+	m.mu.RUnlock()
+	if m.store == nil {
+		return urls
+	}
+	sources, err := m.store.ListSubscriptionSources(context.Background())
+	if err != nil {
+		m.logger.Warnf("failed to load subscription sources: %v", err)
+		return urls
+	}
+	urls = urls[:0]
+	for _, source := range sources {
+		if source.Enabled && source.URL != "" {
+			urls = append(urls, source.URL)
+		}
+	}
+	return urls
 }
 
 // fetchSubscription fetches and parses a single subscription URL.

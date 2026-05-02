@@ -720,6 +720,123 @@ func (s *sqliteStore) UpdateSubscriptionStatus(ctx context.Context, status *Subs
 	return err
 }
 
+// ===================== App settings =====================
+
+func (s *sqliteStore) GetAppSetting(ctx context.Context, key string) (string, bool, error) {
+	row := s.conn().QueryRowContext(ctx, "SELECT value FROM app_settings WHERE key = ?", key)
+	var value string
+	if err := row.Scan(&value); err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("get app setting %q: %w", key, err)
+	}
+	return value, true, nil
+}
+
+func (s *sqliteStore) SetAppSetting(ctx context.Context, key string, value string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.conn().ExecContext(ctx,
+		`INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+		key, value, now,
+	)
+	if err != nil {
+		return fmt.Errorf("set app setting %q: %w", key, err)
+	}
+	return nil
+}
+
+// ===================== Subscription sources =====================
+
+func (s *sqliteStore) ListSubscriptionSources(ctx context.Context) ([]SubscriptionSource, error) {
+	rows, err := s.conn().QueryContext(ctx,
+		`SELECT id, name, url, enabled, auto_update, interval, last_refresh, next_refresh,
+		 node_count, last_error, created_at, updated_at
+		 FROM subscription_sources ORDER BY id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list subscription sources: %w", err)
+	}
+	defer rows.Close()
+
+	var sources []SubscriptionSource
+	for rows.Next() {
+		var src SubscriptionSource
+		var enabled, autoUpdate int
+		var intervalNanos int64
+		var lastRefreshStr, nextRefreshStr, createdAtStr, updatedAtStr string
+		if err := rows.Scan(
+			&src.ID, &src.Name, &src.URL, &enabled, &autoUpdate, &intervalNanos,
+			&lastRefreshStr, &nextRefreshStr, &src.NodeCount, &src.LastError,
+			&createdAtStr, &updatedAtStr,
+		); err != nil {
+			return nil, fmt.Errorf("scan subscription source: %w", err)
+		}
+		src.Enabled = enabled != 0
+		src.AutoUpdate = autoUpdate != 0
+		src.Interval = time.Duration(intervalNanos)
+		src.LastRefresh = parseTime(lastRefreshStr)
+		src.NextRefresh = parseTime(nextRefreshStr)
+		src.CreatedAt = parseTime(createdAtStr)
+		src.UpdatedAt = parseTime(updatedAtStr)
+		sources = append(sources, src)
+	}
+	return sources, rows.Err()
+}
+
+func (s *sqliteStore) ReplaceSubscriptionSources(ctx context.Context, sources []SubscriptionSource) error {
+	execFn := func(txStore *sqliteStore) error {
+		if _, err := txStore.conn().ExecContext(ctx, "DELETE FROM subscription_sources"); err != nil {
+			return fmt.Errorf("clear subscription sources: %w", err)
+		}
+		if len(sources) == 0 {
+			return nil
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		stmt, err := txStore.conn().PrepareContext(ctx,
+			`INSERT INTO subscription_sources
+			 (name, url, enabled, auto_update, interval, last_refresh, next_refresh,
+			  node_count, last_error, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("prepare subscription source insert: %w", err)
+		}
+		defer stmt.Close()
+
+		for i, src := range sources {
+			url := strings.TrimSpace(src.URL)
+			if url == "" {
+				continue
+			}
+			name := strings.TrimSpace(src.Name)
+			if name == "" {
+				name = fmt.Sprintf("subscription-%d", i+1)
+			}
+			interval := src.Interval
+			if interval <= 0 {
+				interval = time.Hour
+			}
+			enabled := boolToInt(src.Enabled)
+			autoUpdate := boolToInt(src.AutoUpdate)
+			if _, err := stmt.ExecContext(ctx,
+				name, url, enabled, autoUpdate, int64(interval),
+				formatTime(src.LastRefresh), formatTime(src.NextRefresh),
+				src.NodeCount, src.LastError, now, now,
+			); err != nil {
+				return fmt.Errorf("insert subscription source %q: %w", url, err)
+			}
+		}
+		return nil
+	}
+
+	if s.tx != nil {
+		return execFn(s)
+	}
+	return s.WithTx(ctx, func(tx Store) error {
+		return execFn(tx.(*sqliteStore))
+	})
+}
+
 // ===================== Lifecycle =====================
 
 func (s *sqliteStore) Close() error {

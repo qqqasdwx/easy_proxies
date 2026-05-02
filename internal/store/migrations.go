@@ -105,6 +105,36 @@ ALTER TABLE node_stats ADD COLUMN total_upload_bytes INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE node_stats ADD COLUMN total_download_bytes INTEGER NOT NULL DEFAULT 0;
 `,
 		},
+		{
+			Version:     3,
+			Description: "add app settings and subscription sources",
+			Up: `
+CREATE TABLE IF NOT EXISTS app_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS subscription_sources (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT    NOT NULL DEFAULT '',
+    url          TEXT    NOT NULL,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    auto_update  INTEGER NOT NULL DEFAULT 0,
+    interval     INTEGER NOT NULL DEFAULT 3600000000000,
+    last_refresh TEXT    NOT NULL DEFAULT '',
+    next_refresh TEXT    NOT NULL DEFAULT '',
+    node_count   INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT    NOT NULL DEFAULT '',
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_sources_enabled ON subscription_sources(enabled);
+CREATE INDEX IF NOT EXISTS idx_subscription_sources_auto_update ON subscription_sources(auto_update);
+`,
+		},
 	}
 }
 

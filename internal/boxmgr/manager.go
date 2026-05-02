@@ -118,9 +118,6 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Unlock()
 
 	if m.store != nil {
-		if err := m.syncStoreFromConfig(ctx, cfg); err != nil {
-			m.logger.Warnf("failed to sync nodes to store: %v", err)
-		}
 		if err := m.applyStoreNodeState(ctx, cfg); err != nil {
 			m.logger.Warnf("failed to apply store node state: %v", err)
 		}
@@ -825,6 +822,7 @@ func (m *Manager) ensureMonitor(ctx context.Context) error {
 		// Set NodeManager for config CRUD endpoints
 		if m.monitorServer != nil {
 			m.monitorServer.SetNodeManager(m)
+			m.monitorServer.SetStore(m.store)
 		}
 		// Note: StartPeriodicHealthCheck is called after nodes are registered in Start()
 	}
@@ -955,28 +953,12 @@ func (m *Manager) CreateNode(ctx context.Context, node config.NodeConfig) (confi
 		return config.NodeConfig{}, err
 	}
 
-	// Determine source. Fileless deployments persist WebUI-created nodes in SQLite.
-	if m.cfg.FilePath() == "" {
-		normalized.Source = config.NodeSourceManual
-	} else if len(m.cfg.Subscriptions) > 0 {
-		normalized.Source = config.NodeSourceSubscription
-	} else if m.cfg.NodesFile != "" {
-		normalized.Source = config.NodeSourceFile
-	} else {
-		normalized.Source = config.NodeSourceInline
-	}
+	normalized.Source = config.NodeSourceManual
 
 	m.cfg.Nodes = append(m.cfg.Nodes, normalized)
-	if err := m.cfg.Save(); err != nil {
-		m.cfg.Nodes = m.cfg.Nodes[:len(m.cfg.Nodes)-1]
-		return config.NodeConfig{}, fmt.Errorf("save config: %w", err)
-	}
 	if err := m.upsertStoreNode(ctx, normalized); err != nil {
-		if m.cfg.FilePath() == "" {
-			m.cfg.Nodes = m.cfg.Nodes[:len(m.cfg.Nodes)-1]
-			return config.NodeConfig{}, fmt.Errorf("save store node: %w", err)
-		}
-		m.logger.Warnf("failed to sync created node to store: %v", err)
+		m.cfg.Nodes = m.cfg.Nodes[:len(m.cfg.Nodes)-1]
+		return config.NodeConfig{}, fmt.Errorf("save store node: %w", err)
 	}
 	return normalized, nil
 }
@@ -1012,16 +994,9 @@ func (m *Manager) UpdateNode(ctx context.Context, name string, node config.NodeC
 
 	prev := m.cfg.Nodes[idx]
 	m.cfg.Nodes[idx] = normalized
-	if err := m.cfg.Save(); err != nil {
-		m.cfg.Nodes[idx] = prev
-		return config.NodeConfig{}, fmt.Errorf("save config: %w", err)
-	}
 	if err := m.upsertStoreNode(ctx, normalized); err != nil {
-		if m.cfg.FilePath() == "" {
-			m.cfg.Nodes[idx] = prev
-			return config.NodeConfig{}, fmt.Errorf("save store node: %w", err)
-		}
-		m.logger.Warnf("failed to sync updated node to store: %v", err)
+		m.cfg.Nodes[idx] = prev
+		return config.NodeConfig{}, fmt.Errorf("save store node: %w", err)
 	}
 	return normalized, nil
 }
@@ -1104,16 +1079,9 @@ func (m *Manager) DeleteNode(ctx context.Context, name string) error {
 
 	backup := cloneNodes(m.cfg.Nodes)
 	m.cfg.Nodes = append(m.cfg.Nodes[:idx], m.cfg.Nodes[idx+1:]...)
-	if err := m.cfg.Save(); err != nil {
-		m.cfg.Nodes = backup
-		return fmt.Errorf("save config: %w", err)
-	}
 	if err := m.deleteStoreNode(ctx, name); err != nil {
-		if m.cfg.FilePath() == "" {
-			m.cfg.Nodes = backup
-			return fmt.Errorf("delete store node: %w", err)
-		}
-		m.logger.Warnf("failed to delete node from store: %v", err)
+		m.cfg.Nodes = backup
+		return fmt.Errorf("delete store node: %w", err)
 	}
 	return nil
 }
@@ -1144,9 +1112,6 @@ func (m *Manager) ReloadWithPortMap(newCfg *config.Config, portMap map[string]ui
 	}
 
 	if m.store != nil {
-		if err := m.syncStoreFromConfig(context.Background(), newCfg); err != nil {
-			m.logger.Warnf("failed to sync nodes to store: %v", err)
-		}
 		if err := m.applyStoreNodeState(context.Background(), newCfg); err != nil {
 			m.logger.Warnf("failed to apply store node state: %v", err)
 		}

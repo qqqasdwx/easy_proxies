@@ -20,6 +20,7 @@ import (
 
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/geoip"
+	"easy_proxies/internal/store"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -74,6 +75,7 @@ type Server struct {
 	cfg    Config
 	cfgMu  sync.RWMutex   // 保护动态配置字段
 	cfgSrc *config.Config // 可持久化的配置对象
+	store  store.Store
 	mgr    *Manager
 	srv    *http.Server
 	logger *log.Logger
@@ -156,6 +158,13 @@ func (s *Server) SetNodeManager(nm NodeManager) {
 	}
 }
 
+// SetStore enables SQLite-backed settings and session persistence.
+func (s *Server) SetStore(st store.Store) {
+	if s != nil {
+		s.store = st
+	}
+}
+
 // SetConfig binds the persistable config object for settings API.
 func (s *Server) SetConfig(cfg *config.Config) {
 	if s == nil {
@@ -199,7 +208,7 @@ func (s *Server) getSettings() (externalIP, probeTarget string, skipCertVerify b
 	return s.cfg.ExternalIP, s.cfg.ProbeTarget, s.cfg.SkipCertVerify, logCfg
 }
 
-// updateSettings updates dynamic settings and persists to config file.
+// updateSettings updates dynamic settings in memory. Persistence is handled by the caller.
 func (s *Server) updateSettings(externalIP, probeTarget string, skipCertVerify bool, logCfg *config.LogConfig, geoipEnabled bool) error {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
@@ -238,9 +247,6 @@ func (s *Server) updateSettings(externalIP, probeTarget string, skipCertVerify b
 		s.cfgSrc.Log.Compress = logCfg.Compress
 	}
 
-	if err := s.cfgSrc.SaveSettings(); err != nil {
-		return fmt.Errorf("保存配置失败: %w", err)
-	}
 	return nil
 }
 
@@ -1178,7 +1184,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			_ = s.cfgSrc.SaveSettings()
+			if s.store != nil {
+				if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {
+					s.cfgMu.Unlock()
+					w.WriteHeader(http.StatusInternalServerError)
+					writeJSON(w, map[string]any{"error": fmt.Sprintf("保存配置失败: %v", err)})
+					return
+				}
+			}
 		}
 		s.cfgMu.Unlock()
 
@@ -1211,11 +1224,22 @@ func (s *Server) handleSubscriptionStatus(w http.ResponseWriter, r *http.Request
 
 	status := s.subRefresher.Status()
 	hasSubscriptions := false
-	s.cfgMu.RLock()
-	if s.cfgSrc != nil {
-		hasSubscriptions = len(s.cfgSrc.Subscriptions) > 0
+	if s.store != nil {
+		if sources, err := s.store.ListSubscriptionSources(r.Context()); err == nil {
+			for _, source := range sources {
+				if source.Enabled && source.URL != "" {
+					hasSubscriptions = true
+					break
+				}
+			}
+		}
+	} else {
+		s.cfgMu.RLock()
+		if s.cfgSrc != nil {
+			hasSubscriptions = len(s.cfgSrc.Subscriptions) > 0
+		}
+		s.cfgMu.RUnlock()
 	}
-	s.cfgMu.RUnlock()
 	writeJSON(w, map[string]any{
 		"enabled":           true,
 		"has_subscriptions": hasSubscriptions,
@@ -1277,6 +1301,16 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			minAvailableNodes = s.cfgSrc.SubscriptionRefresh.MinAvailableNodes
 		}
 		s.cfgMu.RUnlock()
+		if s.store != nil {
+			if sources, err := s.store.ListSubscriptionSources(r.Context()); err == nil {
+				urls = urls[:0]
+				for _, source := range sources {
+					if source.Enabled && source.URL != "" {
+						urls = append(urls, source.URL)
+					}
+				}
+			}
+		}
 		writeJSON(w, map[string]any{
 			"subscriptions":         urls,
 			"enabled":               enabled,
@@ -1335,7 +1369,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			}
 		}
 
-		// Update in-memory config and persist to disk
+		// Update in-memory config and persist to SQLite
 		s.cfgMu.Lock()
 		var refreshNeeded bool
 		if s.cfgSrc != nil {
@@ -1351,8 +1385,30 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			if req.MinAvailableNodes > 0 {
 				s.cfgSrc.SubscriptionRefresh.MinAvailableNodes = req.MinAvailableNodes
 			}
-			// Always persist to disk regardless of subscription manager state
-			if err := s.cfgSrc.SaveSettings(); err != nil {
+			if s.store != nil {
+				sources := make([]store.SubscriptionSource, 0, len(cleanURLs))
+				for idx, u := range cleanURLs {
+					sources = append(sources, store.SubscriptionSource{
+						Name:       fmt.Sprintf("subscription-%d", idx+1),
+						URL:        u,
+						Enabled:    true,
+						AutoUpdate: enabled,
+						Interval:   interval,
+					})
+				}
+				if err := s.store.ReplaceSubscriptionSources(r.Context(), sources); err != nil {
+					s.cfgMu.Unlock()
+					w.WriteHeader(http.StatusInternalServerError)
+					writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
+					return
+				}
+				if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {
+					s.cfgMu.Unlock()
+					w.WriteHeader(http.StatusInternalServerError)
+					writeJSON(w, map[string]any{"error": fmt.Sprintf("保存配置失败: %v", err)})
+					return
+				}
+			} else if err := s.cfgSrc.SaveSettings(); err != nil {
 				s.cfgMu.Unlock()
 				w.WriteHeader(http.StatusInternalServerError)
 				writeJSON(w, map[string]any{"error": fmt.Sprintf("保存配置失败: %v", err)})
@@ -1804,12 +1860,37 @@ func (s *Server) createSession() (*Session, error) {
 	s.sessionMu.Lock()
 	s.sessions[token] = session
 	s.sessionMu.Unlock()
+	if s.store != nil {
+		if err := s.store.CreateSession(context.Background(), &store.Session{
+			Token:     session.Token,
+			CreatedAt: session.CreatedAt,
+			ExpiresAt: session.ExpiresAt,
+		}); err != nil {
+			s.logger.Printf("failed to persist session: %v", err)
+		}
+	}
 
 	return session, nil
 }
 
 // validateSession checks if a session token is valid and not expired.
 func (s *Server) validateSession(token string) bool {
+	if s.store != nil {
+		session, err := s.store.GetSession(context.Background(), token)
+		if err != nil {
+			s.logger.Printf("failed to load session: %v", err)
+			return false
+		}
+		if session == nil {
+			return false
+		}
+		if time.Now().After(session.ExpiresAt) {
+			_ = s.store.DeleteSession(context.Background(), token)
+			return false
+		}
+		return true
+	}
+
 	s.sessionMu.RLock()
 	session, exists := s.sessions[token]
 	s.sessionMu.RUnlock()
@@ -1835,6 +1916,12 @@ func (s *Server) cleanupExpiredSessions() {
 	defer ticker.Stop()
 
 	for range ticker.C {
+		if s.store != nil {
+			if err := s.store.CleanupExpiredSessions(context.Background()); err != nil {
+				s.logger.Printf("failed to clean sessions: %v", err)
+			}
+			continue
+		}
 		now := time.Now()
 		s.sessionMu.Lock()
 		for token, session := range s.sessions {

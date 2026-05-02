@@ -25,13 +25,26 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			log.Printf("⚠️  SQLite store disabled: %v", err)
 		} else {
 			dataStore = st
-			defer dataStore.Close()
-			if err := syncStoreFromConfig(ctx, cfg, dataStore); err != nil {
-				log.Printf("⚠️  Failed to sync nodes to store: %v", err)
-			}
-			if err := applyStoreNodeState(ctx, cfg, dataStore); err != nil {
-				log.Printf("⚠️  Failed to apply store node state: %v", err)
-			}
+		}
+	}
+	return RunWithStore(ctx, cfg, dataStore)
+}
+
+// RunWithStore builds the runtime components from an already-open SQLite store.
+func RunWithStore(ctx context.Context, cfg *config.Config, dataStore store.Store) error {
+	if dataStore != nil {
+		defer dataStore.Close()
+		if cfgFromStore, err := config.LoadRuntime(ctx, dataStore); err != nil {
+			log.Printf("⚠️  Failed to load runtime settings from store: %v", err)
+		} else {
+			cfgFromStore.DatabasePath = cfg.DatabasePath
+			cfg = cfgFromStore
+		}
+		if err := applyStoreNodeState(ctx, cfg, dataStore); err != nil {
+			log.Printf("⚠️  Failed to apply store node state: %v", err)
+		}
+		if err := applySubscriptionSources(ctx, cfg, dataStore); err != nil {
+			log.Printf("⚠️  Failed to apply subscription sources: %v", err)
 		}
 	}
 
@@ -76,7 +89,11 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 
 	// Always create SubscriptionManager so WebUI can hot-reload subscription config
-	subMgr := subscription.New(cfg, boxMgr)
+	var subOpts []subscription.Option
+	if dataStore != nil {
+		subOpts = append(subOpts, subscription.WithStore(dataStore))
+	}
+	subMgr := subscription.New(cfg, boxMgr, subOpts...)
 	defer subMgr.Stop()
 
 	// Start refresh loop only if subscriptions are already configured
@@ -216,6 +233,26 @@ func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store)
 		})
 	}
 	cfg.Nodes = filtered
+	return nil
+}
+
+func applySubscriptionSources(ctx context.Context, cfg *config.Config, s store.Store) error {
+	if cfg == nil || s == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sources, err := s.ListSubscriptionSources(ctx)
+	if err != nil {
+		return err
+	}
+	cfg.Subscriptions = cfg.Subscriptions[:0]
+	for _, source := range sources {
+		if source.Enabled && source.URL != "" {
+			cfg.Subscriptions = append(cfg.Subscriptions, source.URL)
+		}
+	}
 	return nil
 }
 
