@@ -257,6 +257,8 @@ git merge --no-ff feat/v2-<stage-name>
 
 建议分支：`chore/v2-release-readiness`
 
+完成标记: done
+
 ### 必跑检查
 
 ```bash
