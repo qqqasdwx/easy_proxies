@@ -178,6 +178,12 @@ export interface ConfigNodeMutationResponse {
   message: string
 }
 
+export interface NodeURIParseResponse {
+  name: string
+  uri: string
+  outbound_json: string
+}
+
 // ---- Subscription types ----
 
 export interface SubscriptionStatus {

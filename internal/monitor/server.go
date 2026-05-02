@@ -31,6 +31,7 @@ var embeddedFS embed.FS
 // NodeManager exposes config node CRUD and reload operations.
 type NodeManager interface {
 	ListConfigNodes(ctx context.Context) ([]config.NodeConfig, error)
+	ParseNodeURI(ctx context.Context, name string, uri string) (config.NodeConfig, error)
 	CreateNode(ctx context.Context, node config.NodeConfig) (config.NodeConfig, error)
 	UpdateNode(ctx context.Context, name string, node config.NodeConfig) (config.NodeConfig, error)
 	SetNodeEnabled(ctx context.Context, name string, enabled bool) error
@@ -116,6 +117,7 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/settings", s.withAuth(s.handleSettings))
 	mux.HandleFunc("/api/nodes", s.withAuth(s.handleNodes))
 	mux.HandleFunc("/api/nodes/config", s.withAuth(s.handleConfigNodes))
+	mux.HandleFunc("/api/nodes/config/parse-uri", s.withAuth(s.handleNodeURIParse))
 	mux.HandleFunc("/api/nodes/config/batch-toggle", s.withAuth(s.handleConfigNodesBatchToggle))
 	mux.HandleFunc("/api/nodes/config/batch-delete", s.withAuth(s.handleConfigNodesBatchDelete))
 	mux.HandleFunc("/api/nodes/config/", s.withAuth(s.handleConfigNodeItem))
@@ -1680,6 +1682,38 @@ func (p nodePayload) toConfig() config.NodeConfig {
 		Password:        p.Password,
 		Disabled:        p.Disabled,
 	}
+}
+
+func (s *Server) handleNodeURIParse(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.ensureNodeManager(w) {
+		return
+	}
+
+	var payload struct {
+		Name string `json:"name"`
+		URI  string `json:"uri"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "请求格式错误"})
+		return
+	}
+
+	node, err := s.nodeMgr.ParseNodeURI(r.Context(), payload.Name, payload.URI)
+	if err != nil {
+		s.respondNodeError(w, err)
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"name":          node.Name,
+		"uri":           node.URI,
+		"outbound_json": node.OutboundJSON,
+	})
 }
 
 // handleConfigNodes handles GET (list) and POST (create) for config nodes.

@@ -8,6 +8,7 @@ import type {
   ConfigNodesResponse,
   ConfigNodePayload,
   ConfigNodeMutationResponse,
+  NodeURIParseResponse,
   SubscriptionStatus,
   SubscriptionSource,
   SubscriptionSourcePayload,
@@ -460,6 +461,13 @@ export async function createConfigNode(payload: ConfigNodePayload): Promise<Conf
   return request<ConfigNodeMutationResponse>('/api/nodes/config', {
     method: 'POST',
     body: JSON.stringify(payload),
+  })
+}
+
+export async function parseNodeURI(uri: string, name: string): Promise<NodeURIParseResponse> {
+  return request<NodeURIParseResponse>('/api/nodes/config/parse-uri', {
+    method: 'POST',
+    body: JSON.stringify({ uri, name }),
   })
 }
 

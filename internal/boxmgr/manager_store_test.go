@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"easy_proxies/internal/config"
@@ -178,6 +179,18 @@ func TestSubscriptionNodesAreReadOnlyForEditAndDelete(t *testing.T) {
 	}
 	if err := mgr.DeleteNode(ctx, node.Name); !errors.Is(err, monitor.ErrNodeReadOnly) {
 		t.Fatalf("delete error = %v, want read-only", err)
+	}
+}
+
+func TestParseNodeURIExtractsNameAndOutboundJSON(t *testing.T) {
+	ctx := context.Background()
+	mgr := New(&config.Config{}, monitor.Config{})
+	node, err := mgr.ParseNodeURI(ctx, "", "socks5://user:pass@127.0.0.1:1080#parsed")
+	if err != nil {
+		t.Fatalf("parse node uri: %v", err)
+	}
+	if node.Name != "parsed" || node.URI == "" || !strings.Contains(node.OutboundJSON, `"server": "127.0.0.1"`) {
+		t.Fatalf("parsed node = %+v", node)
 	}
 }
 
