@@ -486,15 +486,31 @@ func (p *poolOutbound) recordSuccess(member *memberState) {
 }
 
 func (p *poolOutbound) wrapConn(conn net.Conn, member *memberState) net.Conn {
-	return &trackedConn{Conn: conn, release: func() {
-		p.decActive(member)
-	}}
+	return &trackedConn{
+		Conn: conn,
+		release: func() {
+			p.decActive(member)
+		},
+		onTraffic: func(upload, download int64) {
+			if member.shared != nil {
+				member.shared.addTraffic(upload, download)
+			}
+		},
+	}
 }
 
 func (p *poolOutbound) wrapPacketConn(conn net.PacketConn, member *memberState) net.PacketConn {
-	return &trackedPacketConn{PacketConn: conn, release: func() {
-		p.decActive(member)
-	}}
+	return &trackedPacketConn{
+		PacketConn: conn,
+		release: func() {
+			p.decActive(member)
+		},
+		onTraffic: func(upload, download int64) {
+			if member.shared != nil {
+				member.shared.addTraffic(upload, download)
+			}
+		},
+	}
 }
 
 func (p *poolOutbound) makeReleaseFunc(member *memberState) func() {
@@ -661,8 +677,25 @@ func (p *poolOutbound) makeBlacklistByTagFunc(tag string) func(time.Duration) {
 
 type trackedConn struct {
 	net.Conn
-	once    sync.Once
-	release func()
+	once      sync.Once
+	release   func()
+	onTraffic func(upload, download int64)
+}
+
+func (c *trackedConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if n > 0 && c.onTraffic != nil {
+		c.onTraffic(0, int64(n))
+	}
+	return n, err
+}
+
+func (c *trackedConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	if n > 0 && c.onTraffic != nil {
+		c.onTraffic(int64(n), 0)
+	}
+	return n, err
 }
 
 func (c *trackedConn) Close() error {
@@ -673,8 +706,25 @@ func (c *trackedConn) Close() error {
 
 type trackedPacketConn struct {
 	net.PacketConn
-	once    sync.Once
-	release func()
+	once      sync.Once
+	release   func()
+	onTraffic func(upload, download int64)
+}
+
+func (c *trackedPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
+	n, addr, err := c.PacketConn.ReadFrom(b)
+	if n > 0 && c.onTraffic != nil {
+		c.onTraffic(0, int64(n))
+	}
+	return n, addr, err
+}
+
+func (c *trackedPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+	n, err := c.PacketConn.WriteTo(b, addr)
+	if n > 0 && c.onTraffic != nil {
+		c.onTraffic(int64(n), 0)
+	}
+	return n, err
 }
 
 func (c *trackedPacketConn) Close() error {

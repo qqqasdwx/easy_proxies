@@ -144,3 +144,65 @@ func TestDeleteNodeRemovesStoreOnlyNode(t *testing.T) {
 		t.Fatalf("store-only node still exists: %+v", got)
 	}
 }
+
+func TestRestoreAndFlushTrafficStats(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	node := &store.Node{
+		URI:     "http://user:pass@traffic.example.com:8080",
+		Name:    "traffic-node",
+		Source:  store.NodeSourceManual,
+		Enabled: true,
+	}
+	if err := st.CreateNode(ctx, node); err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	if err := st.UpsertNodeStats(ctx, &store.NodeStats{
+		NodeID:             node.ID,
+		TotalUploadBytes:   1000,
+		TotalDownloadBytes: 2000,
+		LastLatencyMs:      -1,
+	}); err != nil {
+		t.Fatalf("seed stats: %v", err)
+	}
+
+	monitorMgr, err := monitor.NewManager(monitor.Config{})
+	if err != nil {
+		t.Fatalf("new monitor manager: %v", err)
+	}
+	monitorMgr.Stop()
+	entry := monitorMgr.Register(monitor.NodeInfo{
+		Tag:  "outbound-1",
+		Name: node.Name,
+		URI:  node.URI,
+	})
+
+	mgr := New(&config.Config{}, monitor.Config{}, WithStore(st))
+	mgr.monitorMgr = monitorMgr
+	mgr.restoreMonitorTrafficFromStore(ctx)
+
+	snapshots := monitorMgr.Snapshot()
+	if len(snapshots) != 1 || snapshots[0].TotalUpload != 1000 || snapshots[0].TotalDownload != 2000 {
+		t.Fatalf("restored snapshot = %+v", snapshots)
+	}
+
+	entry.AddTraffic(300, 400)
+	mgr.FlushStatsToStore(ctx)
+
+	stats, err := st.GetNodeStats(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("get stats: %v", err)
+	}
+	if stats.TotalUploadBytes != 1300 || stats.TotalDownloadBytes != 2400 {
+		t.Fatalf("flushed stats = %+v", stats)
+	}
+}

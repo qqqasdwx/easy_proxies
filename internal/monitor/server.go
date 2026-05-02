@@ -127,6 +127,7 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/nodes/config/batch-delete", s.withAuth(s.handleConfigNodesBatchDelete))
 	mux.HandleFunc("/api/nodes/config/", s.withAuth(s.handleConfigNodeItem))
 	mux.HandleFunc("/api/nodes/probe-all", s.withAuth(s.handleProbeAll))
+	mux.HandleFunc("/api/nodes/traffic/stream", s.withAuth(s.handleTrafficStream))
 	mux.HandleFunc("/api/nodes/", s.withAuth(s.handleNodeAction))
 	mux.HandleFunc("/api/debug", s.withAuth(s.handleDebug))
 	mux.HandleFunc("/api/export", s.withAuth(s.handleExport))
@@ -306,12 +307,18 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 			regionHealthy[region]++
 		}
 	}
+	traffic := s.mgr.TrafficSummary(false)
 
 	payload := map[string]any{
-		"nodes":          filtered,
-		"total_nodes":    totalNodes,
-		"region_stats":   regionStats,
-		"region_healthy": regionHealthy,
+		"nodes":           filtered,
+		"total_nodes":     totalNodes,
+		"total_upload":    traffic.TotalUpload,
+		"total_download":  traffic.TotalDownload,
+		"upload_speed":    traffic.UploadSpeed,
+		"download_speed":  traffic.DownloadSpeed,
+		"traffic_sampled": traffic.SampledAt,
+		"region_stats":    regionStats,
+		"region_healthy":  regionHealthy,
 	}
 	writeJSON(w, payload)
 }
@@ -340,6 +347,10 @@ func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
 			"last_failure":       snap.LastFailure,
 			"last_error":         snap.LastError,
 			"blacklisted":        snap.Blacklisted,
+			"total_upload":       snap.TotalUpload,
+			"total_download":     snap.TotalDownload,
+			"upload_speed":       snap.UploadSpeed,
+			"download_speed":     snap.DownloadSpeed,
 			"timeline":           snap.Timeline,
 		})
 	}
@@ -1570,6 +1581,62 @@ func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 		}
 		if readErr != nil {
 			return
+		}
+	}
+}
+
+func (s *Server) handleTrafficStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	send := func(summary TrafficSummary) bool {
+		data, err := json.Marshal(map[string]any{
+			"type":           "traffic",
+			"node_count":     summary.NodeCount,
+			"total_upload":   summary.TotalUpload,
+			"total_download": summary.TotalDownload,
+			"upload_speed":   summary.UploadSpeed,
+			"download_speed": summary.DownloadSpeed,
+			"sampled_at":     summary.SampledAt,
+			"nodes":          summary.Nodes,
+		})
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	if !send(s.mgr.TrafficSummary(true)) {
+		return
+	}
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			if !send(s.mgr.TrafficSummary(true)) {
+				return
+			}
 		}
 	}
 }

@@ -17,6 +17,8 @@ type sharedMemberState struct {
 	blacklistedUntil time.Time
 	entry            atomic.Pointer[monitor.EntryHandle]
 	active           atomic.Int32
+	totalUpload      atomic.Int64
+	totalDownload    atomic.Int64
 }
 
 var sharedStateStore sync.Map // map[tag]*sharedMemberState
@@ -143,6 +145,18 @@ func (s *sharedMemberState) decActive() {
 
 func (s *sharedMemberState) activeCount() int32 {
 	return s.active.Load()
+}
+
+func (s *sharedMemberState) addTraffic(upload, download int64) {
+	if upload > 0 {
+		s.totalUpload.Add(upload)
+	}
+	if download > 0 {
+		s.totalDownload.Add(download)
+	}
+	if entry := s.entry.Load(); entry != nil {
+		entry.AddTraffic(upload, download)
+	}
 }
 
 // releaseSharedMember clears blacklist state for a tag (called from release functions).

@@ -64,6 +64,12 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 	defer boxMgr.Close()
 
+	statsCtx, stopStatsFlush := context.WithCancel(ctx)
+	defer stopStatsFlush()
+	if dataStore != nil {
+		go periodicStatsFlush(statsCtx, boxMgr)
+	}
+
 	// Wire up config to monitor server for settings API
 	if server := boxMgr.MonitorServer(); server != nil {
 		server.SetConfig(cfg)
@@ -104,6 +110,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	if subMgr != nil {
 		subMgr.Stop()
 	}
+
+	stopStatsFlush()
+	boxMgr.FlushStatsToStore(shutdownCtx)
 
 	fmt.Println("Stopping box manager...")
 	if err := boxMgr.Close(); err != nil {
@@ -190,4 +199,18 @@ func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store)
 	}
 	cfg.Nodes = filtered
 	return nil
+}
+
+func periodicStatsFlush(ctx context.Context, boxMgr *boxmgr.Manager) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			boxMgr.FlushStatsToStore(ctx)
+		}
+	}
 }

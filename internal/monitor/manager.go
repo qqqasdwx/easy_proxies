@@ -65,7 +65,31 @@ type Snapshot struct {
 	LastLatencyMs     int64           `json:"last_latency_ms"`
 	Available         bool            `json:"available"`
 	InitialCheckDone  bool            `json:"initial_check_done"`
+	TotalUpload       int64           `json:"total_upload"`
+	TotalDownload     int64           `json:"total_download"`
+	UploadSpeed       int64           `json:"upload_speed"`   // bytes/sec
+	DownloadSpeed     int64           `json:"download_speed"` // bytes/sec
 	Timeline          []TimelineEvent `json:"timeline,omitempty"`
+}
+
+// NodeTrafficSpeed is a compact per-node traffic view for streaming APIs.
+type NodeTrafficSpeed struct {
+	Tag           string `json:"tag"`
+	UploadSpeed   int64  `json:"upload_speed"`   // bytes/sec
+	DownloadSpeed int64  `json:"download_speed"` // bytes/sec
+	TotalUpload   int64  `json:"total_upload"`
+	TotalDownload int64  `json:"total_download"`
+}
+
+// TrafficSummary is the aggregated traffic view across all registered nodes.
+type TrafficSummary struct {
+	NodeCount     int                `json:"node_count"`
+	TotalUpload   int64              `json:"total_upload"`
+	TotalDownload int64              `json:"total_download"`
+	UploadSpeed   int64              `json:"upload_speed"`   // bytes/sec
+	DownloadSpeed int64              `json:"download_speed"` // bytes/sec
+	Nodes         []NodeTrafficSpeed `json:"nodes,omitempty"`
+	SampledAt     time.Time          `json:"sampled_at"`
 }
 
 type probeFunc func(ctx context.Context) (time.Duration, error)
@@ -87,6 +111,13 @@ type entry struct {
 	lastOK           time.Time
 	lastProbe        time.Duration
 	active           atomic.Int32
+	totalUpload      atomic.Int64
+	totalDownload    atomic.Int64
+	uploadSpeed      int64
+	downloadSpeed    int64
+	lastSpeedUpload  int64
+	lastSpeedDown    int64
+	lastSpeedAt      time.Time
 	probe            probeFunc
 	release          releaseFunc
 	blacklistFn      func(time.Duration)
@@ -149,6 +180,7 @@ func NewManager(cfg Config) (*Manager, error) {
 		m.probeDst = parsed
 		m.probeReady = true
 	}
+	go m.startTrafficSpeedSampler()
 	return m, nil
 }
 
@@ -276,6 +308,33 @@ func (m *Manager) Stop() {
 	}
 }
 
+func (m *Manager) startTrafficSpeedSampler() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case now := <-ticker.C:
+			m.sampleTrafficSpeeds(now)
+		}
+	}
+}
+
+func (m *Manager) sampleTrafficSpeeds(now time.Time) {
+	m.mu.RLock()
+	entries := make([]*entry, 0, len(m.nodes))
+	for _, e := range m.nodes {
+		entries = append(entries, e)
+	}
+	m.mu.RUnlock()
+
+	for _, e := range entries {
+		e.updateTrafficSpeed(now)
+	}
+}
+
 func parsePort(value string) uint16 {
 	p, err := strconv.Atoi(value)
 	if err != nil || p <= 0 || p > 65535 {
@@ -366,6 +425,58 @@ func (m *Manager) SnapshotFiltered(onlyAvailable bool) []Snapshot {
 	return snapshots
 }
 
+// TrafficSummary returns aggregated traffic totals/speeds and optional per-node details.
+func (m *Manager) TrafficSummary(includeNodes bool) TrafficSummary {
+	m.mu.RLock()
+	list := make([]*entry, 0, len(m.nodes))
+	for _, e := range m.nodes {
+		list = append(list, e)
+	}
+	m.mu.RUnlock()
+
+	summary := TrafficSummary{
+		NodeCount: len(list),
+		SampledAt: time.Now(),
+	}
+	if includeNodes {
+		summary.Nodes = make([]NodeTrafficSpeed, 0, len(list))
+	}
+
+	for _, e := range list {
+		totalUp := e.totalUpload.Load()
+		totalDown := e.totalDownload.Load()
+
+		e.mu.RLock()
+		tag := e.info.Tag
+		upSpeed := e.uploadSpeed
+		downSpeed := e.downloadSpeed
+		e.mu.RUnlock()
+
+		summary.TotalUpload += totalUp
+		summary.TotalDownload += totalDown
+		summary.UploadSpeed += upSpeed
+		summary.DownloadSpeed += downSpeed
+
+		if includeNodes {
+			summary.Nodes = append(summary.Nodes, NodeTrafficSpeed{
+				Tag:           tag,
+				UploadSpeed:   upSpeed,
+				DownloadSpeed: downSpeed,
+				TotalUpload:   totalUp,
+				TotalDownload: totalDown,
+			})
+		}
+	}
+
+	if includeNodes {
+		sort.Slice(summary.Nodes, func(i, j int) bool {
+			return summary.Nodes[i].Tag < summary.Nodes[j].Tag
+		})
+	}
+
+	return summary
+}
+
 // Probe triggers a manual health check.
 func (m *Manager) Probe(ctx context.Context, tag string) (time.Duration, error) {
 	e, err := m.entry(tag)
@@ -425,6 +536,16 @@ func (m *Manager) entry(tag string) (*entry, error) {
 	return e, nil
 }
 
+// SetTraffic restores persisted traffic totals for a registered node.
+func (m *Manager) SetTraffic(tag string, upload, download int64) error {
+	e, err := m.entry(tag)
+	if err != nil {
+		return err
+	}
+	e.setTraffic(upload, download)
+	return nil
+}
+
 func (e *entry) snapshot() Snapshot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -457,6 +578,10 @@ func (e *entry) snapshot() Snapshot {
 		LastLatencyMs:     latencyMs,
 		Available:         e.available,
 		InitialCheckDone:  e.initialCheckDone,
+		TotalUpload:       e.totalUpload.Load(),
+		TotalDownload:     e.totalDownload.Load(),
+		UploadSpeed:       e.uploadSpeed,
+		DownloadSpeed:     e.downloadSpeed,
 		Timeline:          timelineCopy,
 	}
 }
@@ -547,6 +672,72 @@ func (e *entry) recordProbeLatency(d time.Duration) {
 	e.mu.Unlock()
 }
 
+func (e *entry) updateTrafficSpeed(now time.Time) {
+	curUp := e.totalUpload.Load()
+	curDown := e.totalDownload.Load()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.lastSpeedAt.IsZero() {
+		e.lastSpeedAt = now
+		e.lastSpeedUpload = curUp
+		e.lastSpeedDown = curDown
+		e.uploadSpeed = 0
+		e.downloadSpeed = 0
+		return
+	}
+
+	elapsed := now.Sub(e.lastSpeedAt).Seconds()
+	if elapsed <= 0 {
+		return
+	}
+
+	deltaUp := curUp - e.lastSpeedUpload
+	deltaDown := curDown - e.lastSpeedDown
+	if deltaUp < 0 {
+		deltaUp = 0
+	}
+	if deltaDown < 0 {
+		deltaDown = 0
+	}
+
+	e.uploadSpeed = int64(float64(deltaUp) / elapsed)
+	e.downloadSpeed = int64(float64(deltaDown) / elapsed)
+	e.lastSpeedUpload = curUp
+	e.lastSpeedDown = curDown
+	e.lastSpeedAt = now
+}
+
+func (e *entry) addTraffic(upload, download int64) {
+	if upload > 0 {
+		e.totalUpload.Add(upload)
+	}
+	if download > 0 {
+		e.totalDownload.Add(download)
+	}
+}
+
+func (e *entry) setTraffic(upload, download int64) {
+	if upload < 0 {
+		upload = 0
+	}
+	if download < 0 {
+		download = 0
+	}
+
+	e.totalUpload.Store(upload)
+	e.totalDownload.Store(download)
+
+	e.mu.Lock()
+	e.uploadSpeed = 0
+	e.downloadSpeed = 0
+	e.lastSpeedUpload = upload
+	e.lastSpeedDown = download
+	e.lastSpeedAt = time.Now()
+	e.mu.Unlock()
+}
+
 // RecordFailure updates failure counters.
 func (h *EntryHandle) RecordFailure(err error) {
 	if h == nil || h.ref == nil {
@@ -601,6 +792,22 @@ func (h *EntryHandle) DecActive() {
 		return
 	}
 	h.ref.decActive()
+}
+
+// AddTraffic adds upload and download byte counts to the node counters.
+func (h *EntryHandle) AddTraffic(upload, download int64) {
+	if h == nil || h.ref == nil {
+		return
+	}
+	h.ref.addTraffic(upload, download)
+}
+
+// SetTraffic sets traffic counters to persisted totals.
+func (h *EntryHandle) SetTraffic(upload, download int64) {
+	if h == nil || h.ref == nil {
+		return
+	}
+	h.ref.setTraffic(upload, download)
 }
 
 // SetProbe assigns a probe function.
