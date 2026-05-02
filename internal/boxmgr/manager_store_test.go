@@ -181,6 +181,55 @@ func TestSubscriptionNodesAreReadOnlyForEditAndDelete(t *testing.T) {
 	}
 }
 
+func TestCreateJSONOnlyNodePersistsStructuredFields(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	mgr := New(&config.Config{
+		Mode: "multi-port",
+		MultiPort: config.MultiPortConfig{
+			BasePort: 24000,
+		},
+	}, monitor.Config{}, WithStore(st))
+	created, err := mgr.CreateNode(ctx, config.NodeConfig{
+		Name:            "json-only",
+		OutboundJSON:    `{"type":"socks","tag":"ignored","server":"127.0.0.1","server_port":1080}`,
+		InboundProtocol: "socks5",
+		Username:        "local-user",
+		Password:        "local-pass",
+	})
+	if err != nil {
+		t.Fatalf("create json-only node: %v", err)
+	}
+	if created.URI == "" || created.OutboundJSON == "" || created.InboundProtocol != "socks5" {
+		t.Fatalf("created node missing structured fields: %+v", created)
+	}
+
+	storeNode, err := st.GetNodeByName(ctx, "json-only")
+	if err != nil {
+		t.Fatalf("get store node: %v", err)
+	}
+	if storeNode == nil || storeNode.URI != created.URI || storeNode.OutboundJSON == "" || storeNode.InboundProtocol != "socks5" {
+		t.Fatalf("stored node = %+v, want structured fields", storeNode)
+	}
+
+	listed, err := mgr.ListConfigNodes(ctx)
+	if err != nil {
+		t.Fatalf("list config nodes: %v", err)
+	}
+	if len(listed) != 1 || listed[0].OutboundJSON == "" || listed[0].InboundProtocol != "socks5" {
+		t.Fatalf("listed nodes = %+v", listed)
+	}
+}
+
 func TestApplyStoreNodeStateAddsEnabledStoreNodes(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))

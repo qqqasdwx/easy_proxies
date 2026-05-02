@@ -2,7 +2,9 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -210,19 +212,25 @@ func SaveRuntime(ctx context.Context, st store.Store, cfg *Config) error {
 
 // NodeConfig describes a single upstream proxy endpoint expressed as URI.
 type NodeConfig struct {
-	Name     string     `yaml:"name" json:"name"`
-	URI      string     `yaml:"uri" json:"uri"`
-	Port     uint16     `yaml:"port,omitempty" json:"port,omitempty"`
-	Username string     `yaml:"username,omitempty" json:"username,omitempty"`
-	Password string     `yaml:"password,omitempty" json:"password,omitempty"`
-	Source   NodeSource `yaml:"-" json:"source,omitempty"` // Runtime only, not persisted
-	Disabled bool       `yaml:"-" json:"disabled,omitempty"`
+	Name            string     `yaml:"name" json:"name"`
+	URI             string     `yaml:"uri" json:"uri"`
+	OutboundJSON    string     `yaml:"outbound_json,omitempty" json:"outbound_json,omitempty"`
+	Port            uint16     `yaml:"port,omitempty" json:"port,omitempty"`
+	InboundProtocol string     `yaml:"inbound_protocol,omitempty" json:"inbound_protocol,omitempty"`
+	Username        string     `yaml:"username,omitempty" json:"username,omitempty"`
+	Password        string     `yaml:"password,omitempty" json:"password,omitempty"`
+	Source          NodeSource `yaml:"-" json:"source,omitempty"` // Runtime only, not persisted
+	Disabled        bool       `yaml:"-" json:"disabled,omitempty"`
 }
 
-// NodeKey returns a unique identifier for the node based on its URI.
+// NodeKey returns a stable identifier for preserving runtime state.
 // This is used to preserve port assignments across reloads.
 func (n *NodeConfig) NodeKey() string {
-	return n.URI
+	if n.URI != "" {
+		return n.URI
+	}
+	sum := sha256.Sum256([]byte(n.OutboundJSON))
+	return "outbound-json:" + hex.EncodeToString(sum[:])
 }
 
 // ExtractNodeName extracts a human-readable name from a proxy URI.
@@ -359,8 +367,17 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	for idx := range c.Nodes {
 		c.Nodes[idx].Name = strings.TrimSpace(c.Nodes[idx].Name)
 		c.Nodes[idx].URI = strings.TrimSpace(c.Nodes[idx].URI)
-		if c.Nodes[idx].URI == "" {
-			return fmt.Errorf("node %d is missing uri", idx)
+		c.Nodes[idx].OutboundJSON = strings.TrimSpace(c.Nodes[idx].OutboundJSON)
+		if c.Nodes[idx].URI == "" && c.Nodes[idx].OutboundJSON == "" {
+			return fmt.Errorf("node %d is missing uri or outbound_json", idx)
+		}
+		c.Nodes[idx].InboundProtocol = strings.TrimSpace(c.Nodes[idx].InboundProtocol)
+		if c.Nodes[idx].InboundProtocol != "" {
+			if protocol, err := NormalizeInboundProtocol(c.Nodes[idx].InboundProtocol); err != nil {
+				return fmt.Errorf("node %d inbound_protocol: %w", idx, err)
+			} else {
+				c.Nodes[idx].InboundProtocol = protocol
+			}
 		}
 
 		// Auto-extract name from URI if not provided

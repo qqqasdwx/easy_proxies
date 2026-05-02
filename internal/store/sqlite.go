@@ -78,7 +78,7 @@ type querier interface {
 // ===================== Node operations =====================
 
 func (s *sqliteStore) ListNodes(ctx context.Context, filter NodeFilter) ([]Node, error) {
-	query := "SELECT id, uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at FROM nodes"
+	query := "SELECT id, uri, name, source, port, username, password, subscription_id, inbound_protocol, outbound_json, region, country, enabled, created_at, updated_at FROM nodes"
 	var conditions []string
 	var args []any
 
@@ -125,19 +125,19 @@ func (s *sqliteStore) ListNodes(ctx context.Context, filter NodeFilter) ([]Node,
 
 func (s *sqliteStore) GetNode(ctx context.Context, id int64) (*Node, error) {
 	row := s.conn().QueryRowContext(ctx,
-		"SELECT id, uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at FROM nodes WHERE id = ?", id)
+		"SELECT id, uri, name, source, port, username, password, subscription_id, inbound_protocol, outbound_json, region, country, enabled, created_at, updated_at FROM nodes WHERE id = ?", id)
 	return scanNode(row)
 }
 
 func (s *sqliteStore) GetNodeByURI(ctx context.Context, uri string) (*Node, error) {
 	row := s.conn().QueryRowContext(ctx,
-		"SELECT id, uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at FROM nodes WHERE uri = ?", uri)
+		"SELECT id, uri, name, source, port, username, password, subscription_id, inbound_protocol, outbound_json, region, country, enabled, created_at, updated_at FROM nodes WHERE uri = ?", uri)
 	return scanNode(row)
 }
 
 func (s *sqliteStore) GetNodeByName(ctx context.Context, name string) (*Node, error) {
 	row := s.conn().QueryRowContext(ctx,
-		"SELECT id, uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at FROM nodes WHERE name = ?", name)
+		"SELECT id, uri, name, source, port, username, password, subscription_id, inbound_protocol, outbound_json, region, country, enabled, created_at, updated_at FROM nodes WHERE name = ?", name)
 	return scanNode(row)
 }
 
@@ -155,10 +155,10 @@ func (s *sqliteStore) CreateNode(ctx context.Context, node *Node) error {
 	}
 
 	result, err := s.conn().ExecContext(ctx,
-		`INSERT INTO nodes (uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO nodes (uri, name, source, port, username, password, subscription_id, inbound_protocol, outbound_json, region, country, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		node.URI, node.Name, node.Source, node.Port,
-		node.Username, node.Password, node.SubscriptionID, node.Region, node.Country,
+		node.Username, node.Password, node.SubscriptionID, node.InboundProtocol, node.OutboundJSON, node.Region, node.Country,
 		enabled, now, now,
 	)
 	if err != nil {
@@ -190,10 +190,10 @@ func (s *sqliteStore) UpdateNode(ctx context.Context, node *Node) error {
 
 	result, err := s.conn().ExecContext(ctx,
 		`UPDATE nodes SET uri=?, name=?, source=?, port=?, username=?, password=?,
-		 subscription_id=?, region=?, country=?, enabled=?, updated_at=?
+		 subscription_id=?, inbound_protocol=?, outbound_json=?, region=?, country=?, enabled=?, updated_at=?
 		 WHERE id=?`,
 		node.URI, node.Name, node.Source, node.Port,
-		node.Username, node.Password, node.SubscriptionID, node.Region, node.Country,
+		node.Username, node.Password, node.SubscriptionID, node.InboundProtocol, node.OutboundJSON, node.Region, node.Country,
 		enabled, now, node.ID,
 	)
 	if err != nil {
@@ -235,12 +235,14 @@ func (s *sqliteStore) BulkUpsertNodes(ctx context.Context, nodes []Node) error {
 	execFn := func(txStore *sqliteStore) error {
 		now := time.Now().UTC().Format(time.RFC3339)
 		stmt, err := txStore.conn().PrepareContext(ctx,
-			`INSERT INTO nodes (uri, name, source, port, username, password, subscription_id, region, country, enabled, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`INSERT INTO nodes (uri, name, source, port, username, password, subscription_id, inbound_protocol, outbound_json, region, country, enabled, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(uri) DO UPDATE SET
 			   name=excluded.name, source=excluded.source, port=excluded.port,
 			   username=excluded.username, password=excluded.password,
 			   subscription_id=excluded.subscription_id,
+			   inbound_protocol=excluded.inbound_protocol,
+			   outbound_json=excluded.outbound_json,
 			   region=excluded.region, country=excluded.country,
 			   updated_at=excluded.updated_at`)
 		if err != nil {
@@ -256,7 +258,7 @@ func (s *sqliteStore) BulkUpsertNodes(ctx context.Context, nodes []Node) error {
 			}
 			result, err := stmt.ExecContext(ctx,
 				n.URI, n.Name, n.Source, n.Port,
-				n.Username, n.Password, n.SubscriptionID, n.Region, n.Country,
+				n.Username, n.Password, n.SubscriptionID, n.InboundProtocol, n.OutboundJSON, n.Region, n.Country,
 				enabled, now, now,
 			)
 			if err != nil {
@@ -979,7 +981,7 @@ func scanNode(row *sql.Row) (*Node, error) {
 
 	err := row.Scan(
 		&n.ID, &n.URI, &n.Name, &n.Source, &n.Port,
-		&n.Username, &n.Password, &n.SubscriptionID, &n.Region, &n.Country,
+		&n.Username, &n.Password, &n.SubscriptionID, &n.InboundProtocol, &n.OutboundJSON, &n.Region, &n.Country,
 		&enabled, &createdAtStr, &updatedAtStr,
 	)
 	if err == sql.ErrNoRows {
@@ -1004,7 +1006,7 @@ func scanNodes(rows *sql.Rows) ([]Node, error) {
 
 		err := rows.Scan(
 			&n.ID, &n.URI, &n.Name, &n.Source, &n.Port,
-			&n.Username, &n.Password, &n.SubscriptionID, &n.Region, &n.Country,
+			&n.Username, &n.Password, &n.SubscriptionID, &n.InboundProtocol, &n.OutboundJSON, &n.Region, &n.Country,
 			&enabled, &createdAtStr, &updatedAtStr,
 		)
 		if err != nil {

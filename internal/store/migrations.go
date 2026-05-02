@@ -143,6 +143,14 @@ ALTER TABLE nodes ADD COLUMN subscription_id INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_nodes_subscription_id ON nodes(subscription_id);
 `,
 		},
+		{
+			Version:     5,
+			Description: "add structured outbound and inbound protocol fields",
+			Up: `
+ALTER TABLE nodes ADD COLUMN outbound_json TEXT NOT NULL DEFAULT '';
+ALTER TABLE nodes ADD COLUMN inbound_protocol TEXT NOT NULL DEFAULT '';
+`,
+		},
 	}
 }
 

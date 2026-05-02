@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,8 +19,10 @@ import (
 	poolout "easy_proxies/internal/outbound/pool"
 
 	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/auth"
+	boxjson "github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/common/json/badoption"
 )
 
@@ -28,6 +31,7 @@ func Build(cfg *config.Config) (option.Options, error) {
 	baseOutbounds := make([]option.Outbound, 0, len(cfg.Nodes))
 	memberTags := make([]string, 0, len(cfg.Nodes))
 	metadata := make(map[string]poolout.MemberMeta)
+	nodesByTag := make(map[string]config.NodeConfig)
 	var failedNodes []string
 	usedTags := make(map[string]int) // Track tag usage for uniqueness
 
@@ -84,7 +88,7 @@ func Build(cfg *config.Config) (option.Options, error) {
 			usedTags[baseTag] = 1
 		}
 
-		outbound, err := buildNodeOutbound(tag, node.URI, cfg.SkipCertVerify)
+		outbound, err := buildNodeConfigOutbound(tag, node, cfg.SkipCertVerify)
 		if err != nil {
 			log.Printf("❌ Failed to build node '%s': %v (skipping)", node.Name, err)
 			failedNodes = append(failedNodes, node.Name)
@@ -92,6 +96,7 @@ func Build(cfg *config.Config) (option.Options, error) {
 		}
 		memberTags = append(memberTags, tag)
 		baseOutbounds = append(baseOutbounds, outbound)
+		nodesByTag[tag] = node
 		meta := poolout.MemberMeta{
 			Name: node.Name,
 			URI:  node.URI,
@@ -275,8 +280,18 @@ func Build(cfg *config.Config) (option.Options, error) {
 			outbounds = append(outbounds, perPool)
 			username := cfg.MultiPort.Username
 			password := cfg.MultiPort.Password
+			protocol := cfg.MultiPort.Protocol
+			if nodeCfg, ok := nodesByTag[tag]; ok {
+				if nodeCfg.Username != "" {
+					username = nodeCfg.Username
+					password = nodeCfg.Password
+				}
+				if nodeCfg.InboundProtocol != "" {
+					protocol = nodeCfg.InboundProtocol
+				}
+			}
 			inboundTag := fmt.Sprintf("in-%s", tag)
-			inbound, err := buildInboundByProtocol(cfg.MultiPort.Protocol, addr, meta.Port, username, password, inboundTag)
+			inbound, err := buildInboundByProtocol(protocol, addr, meta.Port, username, password, inboundTag)
 			if err != nil {
 				return option.Options{}, fmt.Errorf("build multi-port inbound %q: %w", tag, err)
 			}
@@ -408,6 +423,65 @@ func buildInboundByProtocol(protocol string, listenAddr *badoption.Addr, port ui
 	default:
 		return option.Inbound{}, fmt.Errorf("unsupported inbound protocol %q", protocol)
 	}
+}
+
+func buildNodeConfigOutbound(tag string, node config.NodeConfig, skipCertVerify bool) (option.Outbound, error) {
+	if strings.TrimSpace(node.OutboundJSON) != "" {
+		return outboundFromJSON(tag, node.OutboundJSON)
+	}
+	return buildNodeOutbound(tag, node.URI, skipCertVerify)
+}
+
+// NormalizeOutboundJSON validates sing-box outbound JSON and returns a formatted
+// object. The returned object uses tag as its runtime tag regardless of input.
+func NormalizeOutboundJSON(tag, rawJSON string) (string, error) {
+	outbound, err := outboundFromJSON(tag, rawJSON)
+	if err != nil {
+		return "", err
+	}
+	return marshalOutboundJSON(outbound)
+}
+
+// OutboundJSONFromURI converts a supported proxy URI into sing-box outbound JSON.
+func OutboundJSONFromURI(tag, rawURI string, skipCertVerify bool) (string, error) {
+	outbound, err := buildNodeOutbound(tag, rawURI, skipCertVerify)
+	if err != nil {
+		return "", err
+	}
+	return marshalOutboundJSON(outbound)
+}
+
+func outboundFromJSON(tag, rawJSON string) (option.Outbound, error) {
+	rawJSON = strings.TrimSpace(rawJSON)
+	if rawJSON == "" {
+		return option.Outbound{}, errors.New("outbound_json is empty")
+	}
+	ctx := include.Context(context.Background())
+	var outbound option.Outbound
+	if err := outbound.UnmarshalJSONContext(ctx, []byte(rawJSON)); err != nil {
+		return option.Outbound{}, fmt.Errorf("parse outbound_json: %w", err)
+	}
+	if outbound.Type == "" {
+		return option.Outbound{}, errors.New("outbound_json missing type")
+	}
+	outbound.Tag = tag
+	return outbound, nil
+}
+
+func marshalOutboundJSON(outbound option.Outbound) (string, error) {
+	data, err := boxjson.MarshalContext(include.Context(context.Background()), outbound)
+	if err != nil {
+		return "", fmt.Errorf("encode outbound_json: %w", err)
+	}
+	var normalized any
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		return "", fmt.Errorf("normalize outbound_json: %w", err)
+	}
+	data, err = json.MarshalIndent(normalized, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("format outbound_json: %w", err)
+	}
+	return string(data), nil
 }
 
 func buildNodeOutbound(tag, rawURI string, skipCertVerify bool) (option.Outbound, error) {

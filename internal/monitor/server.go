@@ -1659,22 +1659,26 @@ func (s *Server) deleteSubscriptionNodes(ctx context.Context, sourceID int64) er
 
 // nodePayload is the JSON request body for node CRUD operations.
 type nodePayload struct {
-	Name     string `json:"name"`
-	URI      string `json:"uri"`
-	Port     uint16 `json:"port"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Disabled bool   `json:"disabled"`
+	Name            string `json:"name"`
+	URI             string `json:"uri"`
+	OutboundJSON    string `json:"outbound_json"`
+	Port            uint16 `json:"port"`
+	InboundProtocol string `json:"inbound_protocol"`
+	Username        string `json:"username"`
+	Password        string `json:"password"`
+	Disabled        bool   `json:"disabled"`
 }
 
 func (p nodePayload) toConfig() config.NodeConfig {
 	return config.NodeConfig{
-		Name:     p.Name,
-		URI:      p.URI,
-		Port:     p.Port,
-		Username: p.Username,
-		Password: p.Password,
-		Disabled: p.Disabled,
+		Name:            p.Name,
+		URI:             p.URI,
+		OutboundJSON:    p.OutboundJSON,
+		Port:            p.Port,
+		InboundProtocol: p.InboundProtocol,
+		Username:        p.Username,
+		Password:        p.Password,
+		Disabled:        p.Disabled,
 	}
 }
 

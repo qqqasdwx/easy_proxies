@@ -41,11 +41,13 @@ func TestStoreNodeCRUDAndBulkUpsert(t *testing.T) {
 	st := openTestStore(t)
 
 	node := &Node{
-		URI:     "http://user:pass@example.com:8080",
-		Name:    "node-1",
-		Source:  NodeSourceManual,
-		Port:    24000,
-		Enabled: true,
+		URI:             "http://user:pass@example.com:8080",
+		Name:            "node-1",
+		Source:          NodeSourceManual,
+		Port:            24000,
+		InboundProtocol: "socks5",
+		OutboundJSON:    `{"type":"http","tag":"node-1","server":"example.com","server_port":8080}`,
+		Enabled:         true,
 	}
 	if err := st.CreateNode(ctx, node); err != nil {
 		t.Fatalf("create node: %v", err)
@@ -58,12 +60,13 @@ func TestStoreNodeCRUDAndBulkUpsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get node by uri: %v", err)
 	}
-	if got == nil || got.Name != node.Name || !got.Enabled {
+	if got == nil || got.Name != node.Name || got.InboundProtocol != "socks5" || got.OutboundJSON == "" || !got.Enabled {
 		t.Fatalf("unexpected node: %+v", got)
 	}
 
 	got.Name = "node-renamed"
 	got.Port = 24001
+	got.InboundProtocol = "http"
 	if err := st.UpdateNode(ctx, got); err != nil {
 		t.Fatalf("update node: %v", err)
 	}
@@ -71,17 +74,18 @@ func TestStoreNodeCRUDAndBulkUpsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get updated node: %v", err)
 	}
-	if renamed.Name != "node-renamed" || renamed.Port != 24001 {
+	if renamed.Name != "node-renamed" || renamed.Port != 24001 || renamed.InboundProtocol != "http" {
 		t.Fatalf("updated node = %+v", renamed)
 	}
 
 	if err := st.BulkUpsertNodes(ctx, []Node{
 		{
-			URI:     node.URI,
-			Name:    "node-upserted",
-			Source:  NodeSourceManual,
-			Port:    25000,
-			Enabled: true,
+			URI:          node.URI,
+			Name:         "node-upserted",
+			Source:       NodeSourceManual,
+			Port:         25000,
+			OutboundJSON: `{"type":"http","tag":"node-upserted","server":"example.org","server_port":8081}`,
+			Enabled:      true,
 		},
 		{
 			URI:     "socks5://user:pass@example.net:1080",
@@ -104,7 +108,7 @@ func TestStoreNodeCRUDAndBulkUpsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get upserted node: %v", err)
 	}
-	if upserted.Name != "node-upserted" || upserted.Port != 25000 {
+	if upserted.Name != "node-upserted" || upserted.Port != 25000 || upserted.OutboundJSON == "" {
 		t.Fatalf("upserted node = %+v", upserted)
 	}
 

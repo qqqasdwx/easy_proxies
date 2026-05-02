@@ -109,6 +109,55 @@ func TestBuildUsesConfiguredInboundProtocols(t *testing.T) {
 	}
 }
 
+func TestBuildUsesPerNodeInboundProtocolAndOutboundJSON(t *testing.T) {
+	cfg := &config.Config{
+		Mode: "multi-port",
+		MultiPort: config.MultiPortConfig{
+			Address:  "127.0.0.1",
+			BasePort: 24000,
+			Protocol: config.InboundProtocolHTTP,
+		},
+		Pool: config.PoolConfig{
+			Mode:              "sequential",
+			FailureThreshold:  3,
+			BlacklistDuration: time.Hour,
+		},
+		Nodes: []config.NodeConfig{{
+			Name:            "json-node",
+			URI:             "json://outbound/test",
+			OutboundJSON:    `{"type":"socks","tag":"ignored","server":"127.0.0.1","server_port":1080}`,
+			Port:            24000,
+			InboundProtocol: config.InboundProtocolSOCKS5,
+		}},
+	}
+
+	opts, err := Build(cfg)
+	if err != nil {
+		t.Fatalf("build options: %v", err)
+	}
+
+	var foundOutbound, foundInbound bool
+	for _, outbound := range opts.Outbounds {
+		if outbound.Tag == "json-node" {
+			foundOutbound = true
+			if outbound.Type != C.TypeSOCKS {
+				t.Fatalf("outbound type = %q, want %q", outbound.Type, C.TypeSOCKS)
+			}
+		}
+	}
+	for _, inbound := range opts.Inbounds {
+		if inbound.Tag == "in-json-node" {
+			foundInbound = true
+			if inbound.Type != C.TypeSOCKS {
+				t.Fatalf("inbound type = %q, want %q", inbound.Type, C.TypeSOCKS)
+			}
+		}
+	}
+	if !foundOutbound || !foundInbound {
+		t.Fatalf("found outbound=%v inbound=%v", foundOutbound, foundInbound)
+	}
+}
+
 func TestBuildSkipsDisabledNodes(t *testing.T) {
 	cfg := &config.Config{
 		Mode: "pool",

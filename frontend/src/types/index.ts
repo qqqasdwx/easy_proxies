@@ -150,7 +150,9 @@ export interface ErrorResponse {
 export interface ConfigNodePayload {
   name: string
   uri: string
+  outbound_json: string
   port: number
+  inbound_protocol: string
   username: string
   password: string
 }
@@ -158,7 +160,9 @@ export interface ConfigNodePayload {
 export interface ConfigNodeConfig {
   name: string
   uri: string
+  outbound_json?: string
   port: number
+  inbound_protocol?: string
   username: string
   password: string
   source?: string

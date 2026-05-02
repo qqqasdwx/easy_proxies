@@ -2,6 +2,8 @@ package boxmgr
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -912,6 +914,9 @@ func (m *Manager) ListConfigNodes(ctx context.Context) ([]config.NodeConfig, err
 		out := node
 		if storeNode, ok := storeByURI[node.URI]; ok {
 			out.Disabled = !storeNode.Enabled
+			out.InboundProtocol = storeNode.InboundProtocol
+			out.OutboundJSON = storeNode.OutboundJSON
+			out.Source = config.NodeSource(storeNode.Source)
 		}
 		result = append(result, out)
 		seen[node.URI] = struct{}{}
@@ -920,15 +925,10 @@ func (m *Manager) ListConfigNodes(ctx context.Context) ([]config.NodeConfig, err
 		if _, ok := seen[node.URI]; ok {
 			continue
 		}
-		result = append(result, config.NodeConfig{
-			Name:     node.Name,
-			URI:      node.URI,
-			Port:     node.Port,
-			Username: node.Username,
-			Password: node.Password,
-			Source:   config.NodeSource(node.Source),
-			Disabled: !node.Enabled,
-		})
+		result = append(result, m.storeNodeToConfig(node))
+	}
+	for idx := range result {
+		result[idx] = m.withDisplayOutboundJSON(result[idx])
 	}
 	return result, nil
 }
@@ -1041,14 +1041,7 @@ func (m *Manager) SetNodeEnabled(ctx context.Context, name string, enabled bool)
 		return nil
 	}
 	if enabled && storeNode != nil {
-		m.cfg.Nodes = append(m.cfg.Nodes, config.NodeConfig{
-			Name:     storeNode.Name,
-			URI:      storeNode.URI,
-			Port:     storeNode.Port,
-			Username: storeNode.Username,
-			Password: storeNode.Password,
-			Source:   config.NodeSource(storeNode.Source),
-		})
+		m.cfg.Nodes = append(m.cfg.Nodes, m.storeNodeToConfig(*storeNode))
 	}
 	return nil
 }
@@ -1172,14 +1165,7 @@ func (m *Manager) applyStoreNodeState(ctx context.Context, cfg *config.Config) e
 		if _, ok := seen[node.URI]; ok {
 			continue
 		}
-		filtered = append(filtered, config.NodeConfig{
-			Name:     node.Name,
-			URI:      node.URI,
-			Port:     node.Port,
-			Username: node.Username,
-			Password: node.Password,
-			Source:   config.NodeSource(node.Source),
-		})
+		filtered = append(filtered, m.storeNodeToConfig(node))
 	}
 	cfg.Nodes = filtered
 	return nil
@@ -1195,15 +1181,23 @@ func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) e
 	if err != nil {
 		return fmt.Errorf("lookup store node: %w", err)
 	}
+	if storeNode == nil && node.Name != "" {
+		storeNode, err = m.store.GetNodeByName(ctx, node.Name)
+		if err != nil {
+			return fmt.Errorf("lookup store node by name: %w", err)
+		}
+	}
 	if storeNode == nil {
 		return m.store.CreateNode(ctx, &store.Node{
-			URI:      node.URI,
-			Name:     node.Name,
-			Source:   string(node.Source),
-			Port:     node.Port,
-			Username: node.Username,
-			Password: node.Password,
-			Enabled:  !node.Disabled,
+			URI:             node.URI,
+			Name:            node.Name,
+			Source:          string(node.Source),
+			Port:            node.Port,
+			Username:        node.Username,
+			Password:        node.Password,
+			InboundProtocol: node.InboundProtocol,
+			OutboundJSON:    node.OutboundJSON,
+			Enabled:         !node.Disabled,
 		})
 	}
 
@@ -1212,6 +1206,8 @@ func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) e
 	storeNode.Port = node.Port
 	storeNode.Username = node.Username
 	storeNode.Password = node.Password
+	storeNode.InboundProtocol = node.InboundProtocol
+	storeNode.OutboundJSON = node.OutboundJSON
 	storeNode.Enabled = !node.Disabled
 	return m.store.UpdateNode(ctx, storeNode)
 }
@@ -1371,9 +1367,11 @@ func (m *Manager) nextAvailablePortLocked() uint16 {
 func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) (config.NodeConfig, error) {
 	node.Name = strings.TrimSpace(node.Name)
 	node.URI = strings.TrimSpace(node.URI)
+	node.OutboundJSON = strings.TrimSpace(node.OutboundJSON)
+	node.InboundProtocol = strings.TrimSpace(node.InboundProtocol)
 
-	if node.URI == "" {
-		return config.NodeConfig{}, fmt.Errorf("%w: URI 不能为空", monitor.ErrInvalidNode)
+	if node.URI == "" && node.OutboundJSON == "" {
+		return config.NodeConfig{}, fmt.Errorf("%w: URI 或 JSON 不能为空", monitor.ErrInvalidNode)
 	}
 
 	// Extract name from URI if not provided
@@ -1389,11 +1387,37 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 		}
 	}
 
+	if node.URI == "" {
+		node.URI = m.generatedOutboundURI(currentName, node.OutboundJSON)
+	}
+
 	// Check for name conflict (excluding current node when updating)
 	if idx := m.nodeIndexLocked(node.Name); idx != -1 {
 		if currentName == "" || m.cfg.Nodes[idx].Name != currentName {
 			return config.NodeConfig{}, fmt.Errorf("%w: 节点 %s 已存在", monitor.ErrNodeConflict, node.Name)
 		}
+	}
+
+	if node.OutboundJSON != "" {
+		normalizedJSON, err := builder.NormalizeOutboundJSON(node.Name, node.OutboundJSON)
+		if err != nil {
+			return config.NodeConfig{}, fmt.Errorf("%w: %v", monitor.ErrInvalidNode, err)
+		}
+		node.OutboundJSON = normalizedJSON
+	} else if node.URI != "" && !isGeneratedOutboundURI(node.URI) {
+		outboundJSON, err := builder.OutboundJSONFromURI(node.Name, node.URI, m.cfg.SkipCertVerify)
+		if err != nil {
+			return config.NodeConfig{}, fmt.Errorf("%w: %v", monitor.ErrInvalidNode, err)
+		}
+		node.OutboundJSON = outboundJSON
+	}
+
+	if node.InboundProtocol != "" {
+		protocol, err := config.NormalizeInboundProtocol(node.InboundProtocol)
+		if err != nil {
+			return config.NodeConfig{}, fmt.Errorf("%w: %v", monitor.ErrInvalidNode, err)
+		}
+		node.InboundProtocol = protocol
 	}
 
 	// Handle multi-port mode specifics
@@ -1410,4 +1434,44 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 	}
 
 	return node, nil
+}
+
+func (m *Manager) storeNodeToConfig(node store.Node) config.NodeConfig {
+	return config.NodeConfig{
+		Name:            node.Name,
+		URI:             node.URI,
+		OutboundJSON:    node.OutboundJSON,
+		Port:            node.Port,
+		InboundProtocol: node.InboundProtocol,
+		Username:        node.Username,
+		Password:        node.Password,
+		Source:          config.NodeSource(node.Source),
+		Disabled:        !node.Enabled,
+	}
+}
+
+func (m *Manager) withDisplayOutboundJSON(node config.NodeConfig) config.NodeConfig {
+	if node.OutboundJSON != "" || node.URI == "" || isGeneratedOutboundURI(node.URI) {
+		return node
+	}
+	outboundJSON, err := builder.OutboundJSONFromURI(node.Name, node.URI, m.cfg.SkipCertVerify)
+	if err != nil {
+		return node
+	}
+	node.OutboundJSON = outboundJSON
+	return node
+}
+
+func (m *Manager) generatedOutboundURI(currentName, outboundJSON string) string {
+	if currentName != "" {
+		if idx := m.nodeIndexLocked(currentName); idx != -1 && isGeneratedOutboundURI(m.cfg.Nodes[idx].URI) {
+			return m.cfg.Nodes[idx].URI
+		}
+	}
+	sum := sha256.Sum256([]byte(outboundJSON))
+	return "json://outbound/" + hex.EncodeToString(sum[:16])
+}
+
+func isGeneratedOutboundURI(uri string) bool {
+	return strings.HasPrefix(uri, "json://outbound/")
 }
