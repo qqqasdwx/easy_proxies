@@ -5,3 +5,10 @@ config*.yml
 *.md
 bin
 **/node_modules
+references
+autoresearch-results
+data
+logs
+*.db
+*.db-shm
+*.db-wal

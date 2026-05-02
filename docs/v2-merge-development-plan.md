@@ -210,6 +210,8 @@ git merge --no-ff feat/v2-<stage-name>
 
 建议分支：`feat/v2-react-webui`
 
+完成标记: done
+
 ### 目标
 
 引入 V2 的 React/Vite 前端，但适配当前主线 API 和功能。

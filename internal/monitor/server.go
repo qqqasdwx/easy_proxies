@@ -23,7 +23,7 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-//go:embed assets/index.html
+//go:embed assets/*
 var embeddedFS embed.FS
 
 // Session represents a user session with expiration.
@@ -274,6 +274,21 @@ func (s *Server) Shutdown(ctx context.Context) {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	if r.URL.Path != "/" && r.URL.Path != "/index.html" {
+		cleanPath := "assets" + r.URL.Path
+		if file, err := embeddedFS.Open(cleanPath); err == nil {
+			_ = file.Close()
+			r.URL.Path = cleanPath
+			http.FileServer(http.FS(embeddedFS)).ServeHTTP(w, r)
+			return
+		}
+	}
+
 	data, err := embeddedFS.ReadFile("assets/index.html")
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -288,8 +303,6 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	// 只返回初始检查通过的可用节点
-	filtered := s.mgr.SnapshotFiltered(true)
 	allNodes := s.mgr.Snapshot()
 	totalNodes := len(allNodes)
 
@@ -310,7 +323,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	traffic := s.mgr.TrafficSummary(false)
 
 	payload := map[string]any{
-		"nodes":           filtered,
+		"nodes":           allNodes,
 		"total_nodes":     totalNodes,
 		"total_upload":    traffic.TotalUpload,
 		"total_download":  traffic.TotalDownload,
@@ -572,6 +585,29 @@ func writeJSON(w http.ResponseWriter, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+func parseDurationOr(value string, fallback time.Duration) time.Duration {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // withAuth 认证中间件，如果配置了密码则需要验证
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -581,21 +617,9 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// 检查 Cookie 中的 session token
-		cookie, err := r.Cookie("session_token")
-		if err == nil && s.validateSession(cookie.Value) {
+		if s.validateSessionFromRequest(r) {
 			next(w, r)
 			return
-		}
-
-		// 检查 Authorization header (Bearer token)
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "" {
-			token := strings.TrimPrefix(authHeader, "Bearer ")
-			if s.validateSession(token) {
-				next(w, r)
-				return
-			}
 		}
 
 		// 未授权
@@ -604,11 +628,35 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (s *Server) validateSessionFromRequest(r *http.Request) bool {
+	cookie, err := r.Cookie("session_token")
+	if err == nil && s.validateSession(cookie.Value) {
+		return true
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		return false
+	}
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	return s.validateSession(token)
+}
+
 // handleAuth 处理登录认证
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	// 如果没有配置密码，直接返回成功（不需要token）
 	if s.cfg.Password == "" {
 		writeJSON(w, map[string]any{"message": "无需密码", "no_password": true})
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		if s.validateSessionFromRequest(r) {
+			writeJSON(w, map[string]any{"message": "已登录"})
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		writeJSON(w, map[string]any{"error": "未授权，请先登录"})
 		return
 	}
 
@@ -915,6 +963,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{
 			"external_ip":      extIP,
 			"probe_target":     probeTarget,
+			"log_level":        "",
 			"skip_cert_verify": skipCertVerify,
 			"log": map[string]any{
 				"output":      logCfg.Output,
@@ -935,6 +984,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if cfg != nil {
 			resp["mode"] = cfg.Mode
+			resp["log_level"] = cfg.LogLevel
 			resp["listener"] = map[string]any{
 				"address":  cfg.Listener.Address,
 				"port":     cfg.Listener.Port,
@@ -955,9 +1005,20 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"blacklist_duration": cfg.Pool.BlacklistDuration.String(),
 			}
 			resp["management"] = map[string]any{
-				"listen":   cfg.Management.Listen,
-				"password": cfg.Management.Password,
+				"enabled":      cfg.ManagementEnabled(),
+				"listen":       cfg.Management.Listen,
+				"probe_target": cfg.Management.ProbeTarget,
+				"password":     cfg.Management.Password,
 			}
+			resp["subscription_refresh"] = map[string]any{
+				"enabled":              cfg.SubscriptionRefresh.Enabled,
+				"interval":             cfg.SubscriptionRefresh.Interval.String(),
+				"timeout":              cfg.SubscriptionRefresh.Timeout.String(),
+				"health_check_timeout": cfg.SubscriptionRefresh.HealthCheckTimeout.String(),
+				"drain_timeout":        cfg.SubscriptionRefresh.DrainTimeout.String(),
+				"min_available_nodes":  cfg.SubscriptionRefresh.MinAvailableNodes,
+			}
+			resp["subscriptions"] = cfg.Subscriptions
 			resp["geoip"] = map[string]any{
 				"enabled":              cfg.GeoIP.Enabled,
 				"database_path":        cfg.GeoIP.DatabasePath,
@@ -972,6 +1033,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ExternalIP     string `json:"external_ip"`
 			ProbeTarget    string `json:"probe_target"`
+			LogLevel       string `json:"log_level,omitempty"`
 			SkipCertVerify bool   `json:"skip_cert_verify"`
 			Mode           string `json:"mode,omitempty"`
 			Listener       *struct {
@@ -994,8 +1056,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				BlacklistDuration string `json:"blacklist_duration"`
 			} `json:"pool,omitempty"`
 			Management *struct {
-				Listen   string `json:"listen"`
-				Password string `json:"password"`
+				Enabled     *bool  `json:"enabled,omitempty"`
+				Listen      string `json:"listen"`
+				ProbeTarget string `json:"probe_target"`
+				Password    string `json:"password"`
 			} `json:"management,omitempty"`
 			Log *struct {
 				Output     string `json:"output"`
@@ -1066,6 +1130,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			if req.Mode != "" {
 				s.cfgSrc.Mode = req.Mode
 			}
+			if req.LogLevel != "" {
+				s.cfgSrc.LogLevel = req.LogLevel
+			}
 			if req.Listener != nil {
 				s.cfgSrc.Listener.Address = req.Listener.Address
 				s.cfgSrc.Listener.Port = req.Listener.Port
@@ -1094,7 +1161,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if req.Management != nil {
+				if req.Management.Enabled != nil {
+					s.cfgSrc.Management.Enabled = req.Management.Enabled
+				}
 				s.cfgSrc.Management.Listen = req.Management.Listen
+				if req.Management.ProbeTarget != "" {
+					s.cfgSrc.Management.ProbeTarget = req.Management.ProbeTarget
+				}
 				s.cfgSrc.Management.Password = req.Management.Password
 			}
 			if req.GeoIP != nil {
@@ -1140,15 +1213,22 @@ func (s *Server) handleSubscriptionStatus(w http.ResponseWriter, r *http.Request
 	}
 
 	status := s.subRefresher.Status()
+	hasSubscriptions := false
+	s.cfgMu.RLock()
+	if s.cfgSrc != nil {
+		hasSubscriptions = len(s.cfgSrc.Subscriptions) > 0
+	}
+	s.cfgMu.RUnlock()
 	writeJSON(w, map[string]any{
-		"enabled":        true,
-		"last_refresh":   status.LastRefresh,
-		"next_refresh":   status.NextRefresh,
-		"node_count":     status.NodeCount,
-		"last_error":     status.LastError,
-		"refresh_count":  status.RefreshCount,
-		"is_refreshing":  status.IsRefreshing,
-		"nodes_modified": status.NodesModified,
+		"enabled":           true,
+		"has_subscriptions": hasSubscriptions,
+		"last_refresh":      status.LastRefresh,
+		"next_refresh":      status.NextRefresh,
+		"node_count":        status.NodeCount,
+		"last_error":        status.LastError,
+		"refresh_count":     status.RefreshCount,
+		"is_refreshing":     status.IsRefreshing,
+		"nodes_modified":    status.NodesModified,
 	})
 }
 
@@ -1186,23 +1266,45 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		var urls []string
 		var enabled bool
 		var interval string
+		var timeout string
+		var healthCheckTimeout string
+		var drainTimeout string
+		var minAvailableNodes int
 		if s.cfgSrc != nil {
 			urls = s.cfgSrc.Subscriptions
 			enabled = s.cfgSrc.SubscriptionRefresh.Enabled
 			interval = s.cfgSrc.SubscriptionRefresh.Interval.String()
+			timeout = s.cfgSrc.SubscriptionRefresh.Timeout.String()
+			healthCheckTimeout = s.cfgSrc.SubscriptionRefresh.HealthCheckTimeout.String()
+			drainTimeout = s.cfgSrc.SubscriptionRefresh.DrainTimeout.String()
+			minAvailableNodes = s.cfgSrc.SubscriptionRefresh.MinAvailableNodes
 		}
 		s.cfgMu.RUnlock()
 		writeJSON(w, map[string]any{
-			"subscriptions": urls,
-			"enabled":       enabled,
-			"interval":      interval,
+			"subscriptions":         urls,
+			"enabled":               enabled,
+			"interval":              interval,
+			"timeout":               timeout,
+			"health_check_timeout":  healthCheckTimeout,
+			"drain_timeout":         drainTimeout,
+			"min_available_nodes":   minAvailableNodes,
+			"has_subscriptions":     len(urls) > 0,
+			"subscription_count":    len(urls),
+			"auto_refresh_enabled":  enabled,
+			"auto_refresh_interval": interval,
 		})
 
 	case http.MethodPut:
 		var req struct {
-			Subscriptions []string `json:"subscriptions"`
-			Enabled       bool     `json:"enabled"`
-			Interval      string   `json:"interval"` // e.g. "1h", "30m"
+			Subscriptions       []string `json:"subscriptions"`
+			Enabled             bool     `json:"enabled"`
+			Interval            string   `json:"interval"` // e.g. "1h", "30m"
+			Timeout             string   `json:"timeout"`
+			HealthCheckTimeout  string   `json:"health_check_timeout"`
+			DrainTimeout        string   `json:"drain_timeout"`
+			MinAvailableNodes   int      `json:"min_available_nodes"`
+			AutoRefreshEnabled  *bool    `json:"auto_refresh_enabled,omitempty"`
+			AutoRefreshInterval string   `json:"auto_refresh_interval,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -1211,10 +1313,21 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		}
 
 		// Parse interval
-		interval, err := time.ParseDuration(req.Interval)
+		intervalValue := req.Interval
+		if intervalValue == "" {
+			intervalValue = req.AutoRefreshInterval
+		}
+		interval, err := time.ParseDuration(intervalValue)
 		if err != nil || interval < 5*time.Minute {
 			interval = 1 * time.Hour // default
 		}
+		enabled := req.Enabled
+		if req.AutoRefreshEnabled != nil {
+			enabled = *req.AutoRefreshEnabled
+		}
+		timeout := parseDurationOr(req.Timeout, 30*time.Second)
+		healthCheckTimeout := parseDurationOr(req.HealthCheckTimeout, 30*time.Second)
+		drainTimeout := parseDurationOr(req.DrainTimeout, 30*time.Second)
 
 		// Clean URLs
 		var cleanURLs []string
@@ -1227,10 +1340,20 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 
 		// Update in-memory config and persist to disk
 		s.cfgMu.Lock()
+		var refreshNeeded bool
 		if s.cfgSrc != nil {
+			refreshNeeded = !sameStringSlice(s.cfgSrc.Subscriptions, cleanURLs) ||
+				s.cfgSrc.SubscriptionRefresh.Enabled != enabled ||
+				s.cfgSrc.SubscriptionRefresh.Interval != interval
 			s.cfgSrc.Subscriptions = cleanURLs
-			s.cfgSrc.SubscriptionRefresh.Enabled = req.Enabled
+			s.cfgSrc.SubscriptionRefresh.Enabled = enabled
 			s.cfgSrc.SubscriptionRefresh.Interval = interval
+			s.cfgSrc.SubscriptionRefresh.Timeout = timeout
+			s.cfgSrc.SubscriptionRefresh.HealthCheckTimeout = healthCheckTimeout
+			s.cfgSrc.SubscriptionRefresh.DrainTimeout = drainTimeout
+			if req.MinAvailableNodes > 0 {
+				s.cfgSrc.SubscriptionRefresh.MinAvailableNodes = req.MinAvailableNodes
+			}
 			// Always persist to disk regardless of subscription manager state
 			if err := s.cfgSrc.SaveSettings(); err != nil {
 				s.cfgMu.Unlock()
@@ -1242,25 +1365,34 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		s.cfgMu.Unlock()
 
 		// Hot-reload subscription manager and wait for refresh to complete
-		if s.subRefresher != nil {
-			if err := s.subRefresher.UpdateConfigAndRefresh(cleanURLs, req.Enabled, interval); err != nil {
+		if s.subRefresher != nil && refreshNeeded {
+			if err := s.subRefresher.UpdateConfigAndRefresh(cleanURLs, enabled, interval); err != nil {
 				// Config was saved but refresh failed — report partial success
 				writeJSON(w, map[string]any{
 					"message":       fmt.Sprintf("订阅配置已保存，但刷新失败: %v", err),
 					"subscriptions": cleanURLs,
-					"enabled":       req.Enabled,
+					"enabled":       enabled,
 					"interval":      interval.String(),
 					"refresh_error": err.Error(),
 				})
 				return
 			}
+		} else if s.subRefresher == nil || !refreshNeeded {
+			writeJSON(w, map[string]any{
+				"message":       "订阅配置已保存",
+				"subscriptions": cleanURLs,
+				"enabled":       enabled,
+				"interval":      interval.String(),
+				"node_count":    len(cleanURLs),
+			})
+			return
 		}
 
 		status := s.subRefresher.Status()
 		writeJSON(w, map[string]any{
 			"message":       "订阅配置已更新并生效",
 			"subscriptions": cleanURLs,
-			"enabled":       req.Enabled,
+			"enabled":       enabled,
 			"interval":      interval.String(),
 			"node_count":    status.NodeCount,
 		})
