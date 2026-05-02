@@ -1,3 +1,12 @@
+FROM --platform=$BUILDPLATFORM node:22-slim AS frontend
+WORKDIR /frontend
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN npm config set registry ${NPM_REGISTRY}
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ .
+RUN npm run build -- --outDir /frontend-dist
+
 FROM --platform=$BUILDPLATFORM golang:1.24 AS builder
 ARG TARGETARCH
 WORKDIR /src
@@ -5,6 +14,8 @@ COPY go.mod go.sum ./
 ARG GOPROXY=https://proxy.golang.org,direct
 RUN go env -w GOPROXY=${GOPROXY} && go mod download
 COPY . .
+RUN rm -rf internal/monitor/assets/*
+COPY --from=frontend /frontend-dist/ ./internal/monitor/assets/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies ./cmd/easy_proxies
 
 FROM debian:bookworm-slim AS runtime
