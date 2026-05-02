@@ -680,6 +680,7 @@
               <div style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                 <div class="form-group"><label>监听地址</label><input type="text" id="settingListenerAddr" class="setting-input" placeholder="0.0.0.0" /></div>
                 <div class="form-group"><label>监听端口</label><input type="number" id="settingListenerPort" class="setting-input" min="1" max="65535" placeholder="7890" /></div>
+                <div class="form-group"><label>监听协议</label><select id="settingListenerProtocol" class="setting-input"><option value="mixed">mixed - HTTP + SOCKS5</option><option value="http">http - 仅 HTTP</option><option value="socks5">socks5 - 仅 SOCKS5</option></select></div>
                 <div class="form-group"><label>用户名 (可选)</label><input type="text" id="settingListenerUser" class="setting-input" /></div>
                 <div class="form-group"><label>密码 (可选)</label><input type="password" id="settingListenerPass" class="setting-input" /></div>
               </div>
@@ -690,6 +691,7 @@
               <div style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                 <div class="form-group"><label>监听地址</label><input type="text" id="settingMPAddr" class="setting-input" placeholder="0.0.0.0" /></div>
                 <div class="form-group"><label>起始端口</label><input type="number" id="settingMPBasePort" class="setting-input" min="1" max="65535" placeholder="10000" /></div>
+                <div class="form-group"><label>监听协议</label><select id="settingMPProtocol" class="setting-input"><option value="mixed">mixed - HTTP + SOCKS5</option><option value="http">http - 仅 HTTP</option><option value="socks5">socks5 - 仅 SOCKS5</option></select></div>
                 <div class="form-group"><label>用户名 (可选)</label><input type="text" id="settingMPUser" class="setting-input" /></div>
                 <div class="form-group"><label>密码 (可选)</label><input type="password" id="settingMPPass" class="setting-input" /></div>
               </div>
@@ -1450,12 +1452,14 @@
         const ls = d.listener || {};
         document.getElementById('settingListenerAddr').value = ls.address || '';
         document.getElementById('settingListenerPort').value = ls.port || '';
+        document.getElementById('settingListenerProtocol').value = ls.protocol || 'mixed';
         document.getElementById('settingListenerUser').value = ls.username || '';
         document.getElementById('settingListenerPass').value = ls.password || '';
         // Multi-port
         const mp = d.multi_port || {};
         document.getElementById('settingMPAddr').value = mp.address || '';
         document.getElementById('settingMPBasePort').value = mp.base_port || '';
+        document.getElementById('settingMPProtocol').value = mp.protocol || 'mixed';
         document.getElementById('settingMPUser').value = mp.username || '';
         document.getElementById('settingMPPass').value = mp.password || '';
         // Pool
@@ -1507,10 +1511,12 @@
         skip_cert_verify: document.getElementById('settingSkipCertVerify').checked,
         listener_addr: document.getElementById('settingListenerAddr').value,
         listener_port: document.getElementById('settingListenerPort').value,
+        listener_protocol: document.getElementById('settingListenerProtocol').value,
         listener_user: document.getElementById('settingListenerUser').value,
         listener_pass: document.getElementById('settingListenerPass').value,
         mp_addr: document.getElementById('settingMPAddr').value,
         mp_base_port: document.getElementById('settingMPBasePort').value,
+        mp_protocol: document.getElementById('settingMPProtocol').value,
         mp_user: document.getElementById('settingMPUser').value,
         mp_pass: document.getElementById('settingMPPass').value,
         pool_mode: document.getElementById('settingPoolMode').value,
@@ -1566,12 +1572,14 @@
           listener: {
             address: document.getElementById('settingListenerAddr').value,
             port: parseInt(document.getElementById('settingListenerPort').value) || 0,
+            protocol: document.getElementById('settingListenerProtocol').value,
             username: document.getElementById('settingListenerUser').value,
             password: document.getElementById('settingListenerPass').value,
           },
           multi_port: {
             address: document.getElementById('settingMPAddr').value,
             base_port: parseInt(document.getElementById('settingMPBasePort').value) || 0,
+            protocol: document.getElementById('settingMPProtocol').value,
             username: document.getElementById('settingMPUser').value,
             password: document.getElementById('settingMPPass').value,
           },

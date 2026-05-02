@@ -61,6 +61,7 @@ mode: pool
 listener:
   address: 0.0.0.0
   port: 2323
+  protocol: mixed        # mixed / http / socks5
   username: user
   password: pass
 
@@ -112,6 +113,10 @@ dns:
 - `pool`：所有节点共享一个本地 HTTP/SOCKS5 入口。
 - `multi-port`：每个节点一个独立本地 HTTP/SOCKS5 端口。
 - `hybrid`：同时启用 pool + multi-port。
+
+## 入站协议
+
+`listener.protocol` 控制 pool 入口协议，`multi_port.protocol` 控制多端口入口协议。可选值为 `mixed`（默认，HTTP + SOCKS5）、`http`、`socks5`。
 
 ## 节点来源行为
 
@@ -178,4 +183,3 @@ go test ./...
 ## 许可证
 
 MIT License
-

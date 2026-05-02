@@ -266,23 +266,14 @@ func Build(cfg *config.Config) (option.Options, error) {
 				Options: &perOptions,
 			}
 			outbounds = append(outbounds, perPool)
-			inboundOptions := &option.HTTPMixedInboundOptions{
-				ListenOptions: option.ListenOptions{
-					Listen:     addr,
-					ListenPort: meta.Port,
-				},
-			}
 			username := cfg.MultiPort.Username
 			password := cfg.MultiPort.Password
-			if username != "" {
-				inboundOptions.Users = []auth.User{{Username: username, Password: password}}
-			}
 			inboundTag := fmt.Sprintf("in-%s", tag)
-			inbounds = append(inbounds, option.Inbound{
-				Type:    C.TypeMixed,
-				Tag:     inboundTag,
-				Options: inboundOptions,
-			})
+			inbound, err := buildInboundByProtocol(cfg.MultiPort.Protocol, addr, meta.Port, username, password, inboundTag)
+			if err != nil {
+				return option.Options{}, fmt.Errorf("build multi-port inbound %q: %w", tag, err)
+			}
+			inbounds = append(inbounds, inbound)
 			route.Rules = append(route.Rules, option.Rule{
 				Type: C.RuleTypeDefault,
 				DefaultOptions: option.DefaultRule{
@@ -364,24 +355,52 @@ func buildPoolInbound(cfg *config.Config) (option.Inbound, error) {
 	if err != nil {
 		return option.Inbound{}, fmt.Errorf("parse listener address: %w", err)
 	}
-	inboundOptions := &option.HTTPMixedInboundOptions{
-		ListenOptions: option.ListenOptions{
-			Listen:     listenAddr,
-			ListenPort: cfg.Listener.Port,
-		},
+	return buildInboundByProtocol(
+		cfg.Listener.Protocol,
+		listenAddr,
+		cfg.Listener.Port,
+		cfg.Listener.Username,
+		cfg.Listener.Password,
+		"http-in",
+	)
+}
+
+func buildInboundByProtocol(protocol string, listenAddr *badoption.Addr, port uint16, username, password, tag string) (option.Inbound, error) {
+	normalized, err := config.NormalizeInboundProtocol(protocol)
+	if err != nil {
+		return option.Inbound{}, err
 	}
-	if cfg.Listener.Username != "" {
-		inboundOptions.Users = []auth.User{{
-			Username: cfg.Listener.Username,
-			Password: cfg.Listener.Password,
-		}}
+	listenOptions := option.ListenOptions{
+		Listen:     listenAddr,
+		ListenPort: port,
 	}
-	inbound := option.Inbound{
-		Type:    C.TypeMixed,
-		Tag:     "http-in",
-		Options: inboundOptions,
+	users := []auth.User(nil)
+	if username != "" {
+		users = []auth.User{{Username: username, Password: password}}
 	}
-	return inbound, nil
+
+	switch normalized {
+	case config.InboundProtocolHTTP:
+		opts := &option.HTTPMixedInboundOptions{ListenOptions: listenOptions}
+		if len(users) > 0 {
+			opts.Users = users
+		}
+		return option.Inbound{Type: C.TypeHTTP, Tag: tag, Options: opts}, nil
+	case config.InboundProtocolSOCKS5:
+		opts := &option.SocksInboundOptions{ListenOptions: listenOptions}
+		if len(users) > 0 {
+			opts.Users = users
+		}
+		return option.Inbound{Type: C.TypeSOCKS, Tag: tag, Options: opts}, nil
+	case config.InboundProtocolMixed:
+		opts := &option.HTTPMixedInboundOptions{ListenOptions: listenOptions}
+		if len(users) > 0 {
+			opts.Users = users
+		}
+		return option.Inbound{Type: C.TypeMixed, Tag: tag, Options: opts}, nil
+	default:
+		return option.Inbound{}, fmt.Errorf("unsupported inbound protocol %q", protocol)
+	}
 }
 
 func buildNodeOutbound(tag, rawURI string, skipCertVerify bool) (option.Outbound, error) {
@@ -1350,11 +1369,10 @@ func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta)
 		if cfg.Listener.Username != "" {
 			auth = fmt.Sprintf("%s:%s@", cfg.Listener.Username, cfg.Listener.Password)
 		}
-		httpProxyURL := fmt.Sprintf("http://%s%s:%d", auth, cfg.Listener.Address, cfg.Listener.Port)
-		socksProxyURL := fmt.Sprintf("socks5://%s%s:%d", auth, cfg.Listener.Address, cfg.Listener.Port)
 		log.Printf("🌐 Pool Entry Point:")
-		log.Printf("   HTTP:   %s", httpProxyURL)
-		log.Printf("   SOCKS5: %s", socksProxyURL)
+		for _, link := range proxyLinksForProtocol(cfg.Listener.Protocol, auth, cfg.Listener.Address, cfg.Listener.Port) {
+			log.Printf("   %-7s %s", link.Label+":", link.URL)
+		}
 		log.Println("")
 		log.Printf("   Nodes in pool (%d):", len(metadata))
 		for _, meta := range metadata {
@@ -1380,14 +1398,39 @@ func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta)
 			if username != "" {
 				auth = fmt.Sprintf("%s:%s@", username, password)
 			}
-			httpProxyURL := fmt.Sprintf("http://%s%s:%d", auth, cfg.MultiPort.Address, node.Port)
-			socksProxyURL := fmt.Sprintf("socks5://%s%s:%d", auth, cfg.MultiPort.Address, node.Port)
 			log.Printf("   [%d] %s", node.Port, node.Name)
-			log.Printf("       HTTP:   %s", httpProxyURL)
-			log.Printf("       SOCKS5: %s", socksProxyURL)
+			for _, link := range proxyLinksForProtocol(cfg.MultiPort.Protocol, auth, cfg.MultiPort.Address, node.Port) {
+				log.Printf("       %-7s %s", link.Label+":", link.URL)
+			}
 		}
 	}
 
 	log.Println("═══════════════════════════════════════════════════════════════")
 	log.Println("")
+}
+
+type proxyLink struct {
+	Label string
+	URL   string
+}
+
+func proxyLinksForProtocol(protocol, auth, address string, port uint16) []proxyLink {
+	normalized, err := config.NormalizeInboundProtocol(protocol)
+	if err != nil {
+		normalized = config.InboundProtocolMixed
+	}
+
+	httpURL := fmt.Sprintf("http://%s%s:%d", auth, address, port)
+	socksURL := fmt.Sprintf("socks5://%s%s:%d", auth, address, port)
+	switch normalized {
+	case config.InboundProtocolHTTP:
+		return []proxyLink{{Label: "HTTP", URL: httpURL}}
+	case config.InboundProtocolSOCKS5:
+		return []proxyLink{{Label: "SOCKS5", URL: socksURL}}
+	default:
+		return []proxyLink{
+			{Label: "HTTP", URL: httpURL},
+			{Label: "SOCKS5", URL: socksURL},
+		}
+	}
 }
