@@ -2,6 +2,7 @@ import type {
   AuthResponse,
   NodesResponse,
   DebugResponse,
+  LogsResponse,
   SettingsData,
   SettingsUpdateResponse,
   ConfigNodesResponse,
@@ -326,6 +327,10 @@ export function streamTraffic(
 
 export async function fetchDebug(): Promise<DebugResponse> {
   return request<DebugResponse>('/api/debug')
+}
+
+export async function fetchLogs(): Promise<LogsResponse> {
+  return request<LogsResponse>('/api/logs')
 }
 
 // ---- Settings API ----

@@ -76,6 +76,10 @@ export interface DebugResponse {
   success_rate: number
 }
 
+export interface LogsResponse {
+  logs: string
+}
+
 export interface SettingsData {
   // Global
   mode: string

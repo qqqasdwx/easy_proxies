@@ -2,13 +2,14 @@ import React, { useState, useEffect, useCallback } from 'react'
 import MonitorPanel from './components/MonitorPanel'
 import ManagePanel from './components/ManagePanel'
 import DebugPanel from './components/DebugPanel'
+import LogsPanel from './components/LogsPanel'
 import SettingsPanel from './components/SettingsPanel'
 import LoginPage from './components/LoginPage'
 import { checkAuth, getToken, logout } from './api/client'
 import packageJson from '../package.json'
 
 type AuthState = 'loading' | 'need_login' | 'authenticated'
-type TabId = 'monitor' | 'manage' | 'debug' | 'settings'
+type TabId = 'monitor' | 'manage' | 'debug' | 'logs' | 'settings'
 
 const ALL_THEMES = [
   'light', 'dark', 'cupcake', 'bumblebee', 'emerald', 'corporate',
@@ -51,6 +52,16 @@ const MENU_ITEMS: { id: TabId; label: string; icon: React.ReactNode; desc: strin
     ),
   },
   {
+    id: 'logs',
+    label: '日志控制台',
+    desc: '实时运行日志',
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7h16M4 12h16M4 17h10" />
+      </svg>
+    ),
+  },
+  {
     id: 'settings',
     label: '系统设置',
     desc: '配置与订阅',
@@ -63,7 +74,7 @@ const MENU_ITEMS: { id: TabId; label: string; icon: React.ReactNode; desc: strin
   },
 ]
 
-const VALID_TABS: TabId[] = ['monitor', 'manage', 'debug', 'settings']
+const VALID_TABS: TabId[] = ['monitor', 'manage', 'debug', 'logs', 'settings']
 const THEME_STORAGE_KEY = 'ep-theme'
 
 const APP_VERSION = `v${packageJson.version}`
@@ -174,6 +185,7 @@ function App() {
       case 'monitor': return <MonitorPanel />
       case 'manage': return <ManagePanel />
       case 'debug': return <DebugPanel />
+      case 'logs': return <LogsPanel />
       case 'settings': return <SettingsPanel />
       default: return <MonitorPanel />
     }
