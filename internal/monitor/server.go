@@ -43,6 +43,7 @@ var (
 	ErrNodeNotFound = errors.New("节点不存在")
 	ErrNodeConflict = errors.New("节点名称或端口已存在")
 	ErrInvalidNode  = errors.New("无效的节点配置")
+	ErrNodeReadOnly = errors.New("订阅节点不支持编辑或删除")
 )
 
 // SubscriptionRefresher interface for subscription manager.
@@ -1856,10 +1857,21 @@ func (s *Server) handleConfigNodesBatchDelete(w http.ResponseWriter, r *http.Req
 
 	var errs []string
 	success := 0
+	skipped := 0
+	sourcesByName := map[string]config.NodeSource{}
+	if nodes, err := s.nodeMgr.ListConfigNodes(r.Context()); err == nil {
+		for _, node := range nodes {
+			sourcesByName[node.Name] = node.Source
+		}
+	}
 	for _, name := range payload.Names {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			errs = append(errs, "空节点名称")
+			continue
+		}
+		if sourcesByName[name] == config.NodeSourceSubscription {
+			skipped++
 			continue
 		}
 		if err := s.nodeMgr.DeleteNode(r.Context(), name); err != nil {
@@ -1869,9 +1881,14 @@ func (s *Server) handleConfigNodesBatchDelete(w http.ResponseWriter, r *http.Req
 		success++
 	}
 
+	message := fmt.Sprintf("成功删除 %d 个节点，请点击重载使配置生效", success)
+	if skipped > 0 {
+		message = fmt.Sprintf("成功删除 %d 个节点，跳过 %d 个订阅节点，请点击重载使配置生效", success, skipped)
+	}
 	result := map[string]any{
-		"message":     fmt.Sprintf("成功删除 %d 个节点，请点击重载使配置生效", success),
+		"message":     message,
 		"success":     success,
+		"skipped":     skipped,
 		"total":       len(payload.Names),
 		"need_reload": success > 0,
 	}
@@ -1914,7 +1931,7 @@ func (s *Server) respondNodeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNodeNotFound):
 		status = http.StatusNotFound
-	case errors.Is(err, ErrNodeConflict), errors.Is(err, ErrInvalidNode):
+	case errors.Is(err, ErrNodeConflict), errors.Is(err, ErrInvalidNode), errors.Is(err, ErrNodeReadOnly):
 		status = http.StatusBadRequest
 	}
 	w.WriteHeader(status)

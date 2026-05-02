@@ -983,6 +983,9 @@ func (m *Manager) UpdateNode(ctx context.Context, name string, node config.NodeC
 	if idx == -1 {
 		return config.NodeConfig{}, monitor.ErrNodeNotFound
 	}
+	if m.cfg.Nodes[idx].Source == config.NodeSourceSubscription {
+		return config.NodeConfig{}, monitor.ErrNodeReadOnly
+	}
 
 	normalized, err := m.prepareNodeLocked(node, name)
 	if err != nil {
@@ -1002,7 +1005,6 @@ func (m *Manager) UpdateNode(ctx context.Context, name string, node config.NodeC
 }
 
 // SetNodeEnabled updates a node enabled flag in runtime state and optional store.
-// It intentionally does not rewrite config.yaml or nodes.txt.
 func (m *Manager) SetNodeEnabled(ctx context.Context, name string, enabled bool) error {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -1072,9 +1074,15 @@ func (m *Manager) DeleteNode(ctx context.Context, name string) error {
 		if storeNode, err := m.getStoreNodeByName(ctx, name); err != nil {
 			return err
 		} else if storeNode != nil {
+			if storeNode.Source == store.NodeSourceSubscription {
+				return monitor.ErrNodeReadOnly
+			}
 			return m.store.DeleteNode(storeContext(ctx), storeNode.ID)
 		}
 		return monitor.ErrNodeNotFound
+	}
+	if m.cfg.Nodes[idx].Source == config.NodeSourceSubscription {
+		return monitor.ErrNodeReadOnly
 	}
 
 	backup := cloneNodes(m.cfg.Nodes)
