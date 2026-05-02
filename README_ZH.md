@@ -21,10 +21,11 @@ Easy Proxies 是一个基于 sing-box 的代理池管理工具。
   - 动态设置（`external_ip`、`probe_target`、`skip_cert_verify`、`geoip`）
   - 节点配置增删改查 + 重载
   - 订阅状态查询 + 手动刷新 + **保存即时生效**
-  - **实时日志控制台**（最近 1000 行，WebSocket 流式传输）
+  - **日志控制台**（最近 1000 行，WebUI 自动刷新）
 - 新增可配置 DNS 解析器（对 VMess 域名节点非常关键）。
 - 可选 GeoIP 标记（支持 JP/KR/US/HK/TW/SG 地域分区，可在 WebUI 中开关，支持自动更新和热重载）。
 - **可配置日志轮转**，支持大小限制、备份数量和压缩。
+- **可选 SQLite store**，持久化 WebUI 节点、禁用状态、会话和流量统计，同时兼容 `config.yaml` / `nodes.txt`。
 
 ## 快速开始
 
@@ -33,6 +34,7 @@ Easy Proxies 是一个基于 sing-box 的代理池管理工具。
 ```bash
 cp config.example.yaml config.yaml
 cp nodes.example nodes.txt
+mkdir -p logs data
 ```
 
 编辑 `config.yaml`，并配置节点来源（`nodes.txt` / `subscriptions` / `nodes`）。
@@ -121,13 +123,37 @@ dns:
 
 ## 节点来源行为
 
-`database_path` 指向可选 SQLite store。当前阶段仅提供持久化基础层，`config.yaml` 与 `nodes.txt` 仍保持兼容。
+`database_path` 指向可选 SQLite store。它会持久化 WebUI 手动节点、禁用状态、登录会话和运行统计；`config.yaml` 与 `nodes.txt` 仍保持兼容。
 
 - 配置了 `subscriptions` 时：
   - 会抓取订阅节点并追加到运行节点列表
   - `nodes_file` 作为订阅节点写入路径
   - 启动阶段不再从 `nodes_file` 读取节点
 - `nodes`（内联节点）只要存在就会参与运行。
+
+## SQLite 迁移说明
+
+默认配置使用：
+
+```yaml
+database_path: data/data.db
+```
+
+从旧版本升级时，保留原有 `config.yaml` 和 `nodes.txt`，创建 `data/` 目录后直接启动即可：
+
+```bash
+mkdir -p data logs
+docker compose up -d
+```
+
+首次启动会把已有节点按 URI 同步到 SQLite，不会重复插入。之后 WebUI 中的新增、禁用、删除和流量累计会写入 `data/data.db`。升级和备份时请同时保留：
+
+- `config.yaml`
+- `nodes.txt`
+- `logs/`
+- `data/`
+
+更详细的说明见 [SQLite Store Migration Guide](docs/sqlite-migration.md)。
 
 ## 协议支持注意事项
 
@@ -154,10 +180,15 @@ dns:
 - `POST /api/nodes/{tag}/release`
 - `POST /api/nodes/{tag}/blacklist`
 - `POST /api/nodes/probe-all`（SSE）
+- `GET /api/nodes/traffic/stream`（SSE）
 - `GET /api/export`
+- `POST /api/import`
 - `GET|PUT /api/subscription/config`
 - `GET|POST /api/subscription/status|refresh`
 - `GET|POST|PUT|DELETE /api/nodes/config[...]`
+- `POST /api/nodes/config/batch-toggle`
+- `POST /api/nodes/config/batch-delete`
+- `GET /api/logs`
 - `POST /api/reload`
 
 `management.password` 为空时，Web/API 不要求登录。
@@ -177,6 +208,9 @@ dns:
 
 ```bash
 go test ./...
+npm ci --prefix frontend
+npm run build --prefix frontend
+docker build -t easy_proxies:dev .
 ```
 
 ## Star History
