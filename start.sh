@@ -35,4 +35,7 @@ fi
 # Ensure config files are writable for WebUI settings
 chmod 666 config.yaml nodes.txt 2>/dev/null || true
 
+# Create optional SQLite store directory for Docker bind mount
+mkdir -p data
+
 docker compose pull && docker compose down && docker compose up -d

@@ -36,3 +36,5 @@ services:
       - ./nodes.txt:/etc/easy_proxies/nodes.txt
       # 日志映射目录（当从 WebUI 开启日志写到文件时有效）
       - ./logs:/app/logs
+      # SQLite store 数据目录（用于后续节点、统计和会话持久化）
+      - ./data:/etc/easy_proxies/data

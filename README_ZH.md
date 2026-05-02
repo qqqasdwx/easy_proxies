@@ -57,6 +57,7 @@ go run ./cmd/easy_proxies -config config.yaml
 
 ```yaml
 mode: pool
+database_path: data/data.db
 
 listener:
   address: 0.0.0.0
@@ -119,6 +120,8 @@ dns:
 `listener.protocol` 控制 pool 入口协议，`multi_port.protocol` 控制多端口入口协议。可选值为 `mixed`（默认，HTTP + SOCKS5）、`http`、`socks5`。
 
 ## 节点来源行为
+
+`database_path` 指向可选 SQLite store。当前阶段仅提供持久化基础层，`config.yaml` 与 `nodes.txt` 仍保持兼容。
 
 - 配置了 `subscriptions` 时：
   - 会抓取订阅节点并追加到运行节点列表

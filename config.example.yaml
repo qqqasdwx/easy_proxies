@@ -36,6 +36,10 @@ skip_cert_verify: false
 # 外部 IP 地址，用于导出配置时替换 0.0.0.0（可选）
 # external_ip: "your.public.ip"
 
+# SQLite 数据库文件路径（默认 data/data.db，相对于配置文件目录）
+# Phase 2 仅引入可选 store 基础层，现有 config.yaml / nodes.txt 行为保持不变。
+database_path: data/data.db
+
 # ───────────────────────────────────────────────────────────────
 # 监听配置（Pool 模式入口）
 # ───────────────────────────────────────────────────────────────

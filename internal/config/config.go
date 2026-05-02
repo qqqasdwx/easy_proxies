@@ -32,6 +32,7 @@ type Config struct {
 	Nodes               []NodeConfig              `yaml:"nodes"`
 	NodesFile           string                    `yaml:"nodes_file"`    // 节点文件路径，每行一个 URI
 	Subscriptions       []string                  `yaml:"subscriptions"` // 订阅链接列表
+	DatabasePath        string                    `yaml:"database_path"` // SQLite 数据库路径，默认 data/data.db
 	ExternalIP          string                    `yaml:"external_ip"`   // 外部 IP 地址，用于导出时替换 0.0.0.0
 	LogLevel            string                    `yaml:"log_level"`
 	SkipCertVerify      bool                      `yaml:"skip_cert_verify"` // 全局跳过 SSL 证书验证
@@ -145,6 +146,15 @@ func (c *Config) normalizeInboundProtocols() error {
 		return fmt.Errorf("multi_port.protocol: %w", err)
 	}
 	return nil
+}
+
+func (c *Config) normalizeDatabasePath() {
+	if c.DatabasePath == "" {
+		c.DatabasePath = "data/data.db"
+	}
+	if c.filePath != "" && !filepath.IsAbs(c.DatabasePath) {
+		c.DatabasePath = filepath.Join(filepath.Dir(c.filePath), c.DatabasePath)
+	}
 }
 
 // NodeConfig describes a single upstream proxy endpoint expressed as URI.
@@ -281,6 +291,7 @@ func (c *Config) normalize() error {
 		defaultEnabled := true
 		c.Management.Enabled = &defaultEnabled
 	}
+	c.normalizeDatabasePath()
 
 	// Subscription refresh defaults
 	if c.SubscriptionRefresh.Interval <= 0 {
@@ -497,6 +508,7 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		defaultEnabled := true
 		c.Management.Enabled = &defaultEnabled
 	}
+	c.normalizeDatabasePath()
 	if c.SubscriptionRefresh.Interval <= 0 {
 		c.SubscriptionRefresh.Interval = 1 * time.Hour
 	}
@@ -1252,6 +1264,7 @@ func (c *Config) SaveSettings() error {
 	saveCfg.SkipCertVerify = c.SkipCertVerify
 	saveCfg.Log = c.Log
 	saveCfg.Subscriptions = c.Subscriptions
+	saveCfg.DatabasePath = c.DatabasePath
 	saveCfg.SubscriptionRefresh = c.SubscriptionRefresh
 	saveCfg.GeoIP = c.GeoIP
 	saveCfg.Mode = c.Mode

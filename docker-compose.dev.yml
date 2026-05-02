@@ -17,3 +17,4 @@ services:
       - ./config.yaml:/etc/easy_proxies/config.yaml
       - ./nodes.txt:/etc/easy_proxies/nodes.txt
       - ./logs:/app/logs
+      - ./data:/etc/easy_proxies/data
