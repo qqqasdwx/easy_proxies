@@ -469,7 +469,7 @@ func outboundFromJSON(tag, rawJSON string) (option.Outbound, error) {
 }
 
 func marshalOutboundJSON(outbound option.Outbound) (string, error) {
-	data, err := boxjson.MarshalContext(include.Context(context.Background()), outbound)
+	data, err := boxjson.MarshalContext(include.Context(context.Background()), &outbound)
 	if err != nil {
 		return "", fmt.Errorf("encode outbound_json: %w", err)
 	}
