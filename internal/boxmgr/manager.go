@@ -125,6 +125,23 @@ func (m *Manager) Start(ctx context.Context) error {
 			m.logger.Warnf("failed to apply store node state: %v", err)
 		}
 	}
+	if err := cfg.NormalizeWithPortMap(cfg.BuildPortMap()); err != nil {
+		return fmt.Errorf("normalize config: %w", err)
+	}
+
+	if len(cfg.Nodes) == 0 {
+		m.mu.Lock()
+		m.cfg = cfg
+		m.mu.Unlock()
+		if m.monitorMgr != nil {
+			m.monitorMgr.ClearNodes()
+		}
+		if m.monitorServer != nil {
+			m.monitorServer.SetConfig(cfg)
+		}
+		m.logger.Infof("no proxy nodes configured; management server is running without sing-box listeners")
+		return nil
+	}
 
 	// Try to start, with automatic port conflict resolution
 	var instance *box.Box
@@ -194,10 +211,6 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 	}
 
 	m.mu.Lock()
-	if m.currentBox == nil {
-		m.mu.Unlock()
-		return errors.New("manager not started")
-	}
 	ctx := m.baseCtx
 	oldBox := m.currentBox
 	oldCfg := m.cfg
@@ -237,6 +250,19 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 	// Clear stale monitor nodes so the dashboard reflects the new config
 	if m.monitorMgr != nil {
 		m.monitorMgr.ClearNodes()
+	}
+
+	if len(newCfg.Nodes) == 0 {
+		m.applyConfigSettings(newCfg)
+		m.mu.Lock()
+		m.cfg = newCfg
+		m.currentBox = nil
+		m.mu.Unlock()
+		if m.monitorServer != nil {
+			m.monitorServer.SetConfig(m.cfg)
+		}
+		m.logger.Infof("reload completed with no proxy nodes; sing-box listeners are stopped")
+		return nil
 	}
 
 	// Create and start new box instance with automatic port conflict resolution
@@ -929,9 +955,10 @@ func (m *Manager) CreateNode(ctx context.Context, node config.NodeConfig) (confi
 		return config.NodeConfig{}, err
 	}
 
-	// Determine source: if subscriptions exist, new nodes go to nodes.txt (subscription source)
-	// Otherwise, if nodes_file exists, use file source; else inline
-	if len(m.cfg.Subscriptions) > 0 {
+	// Determine source. Fileless deployments persist WebUI-created nodes in SQLite.
+	if m.cfg.FilePath() == "" {
+		normalized.Source = config.NodeSourceManual
+	} else if len(m.cfg.Subscriptions) > 0 {
 		normalized.Source = config.NodeSourceSubscription
 	} else if m.cfg.NodesFile != "" {
 		normalized.Source = config.NodeSourceFile
@@ -945,6 +972,10 @@ func (m *Manager) CreateNode(ctx context.Context, node config.NodeConfig) (confi
 		return config.NodeConfig{}, fmt.Errorf("save config: %w", err)
 	}
 	if err := m.upsertStoreNode(ctx, normalized); err != nil {
+		if m.cfg.FilePath() == "" {
+			m.cfg.Nodes = m.cfg.Nodes[:len(m.cfg.Nodes)-1]
+			return config.NodeConfig{}, fmt.Errorf("save store node: %w", err)
+		}
 		m.logger.Warnf("failed to sync created node to store: %v", err)
 	}
 	return normalized, nil
@@ -986,6 +1017,10 @@ func (m *Manager) UpdateNode(ctx context.Context, name string, node config.NodeC
 		return config.NodeConfig{}, fmt.Errorf("save config: %w", err)
 	}
 	if err := m.upsertStoreNode(ctx, normalized); err != nil {
+		if m.cfg.FilePath() == "" {
+			m.cfg.Nodes[idx] = prev
+			return config.NodeConfig{}, fmt.Errorf("save store node: %w", err)
+		}
 		m.logger.Warnf("failed to sync updated node to store: %v", err)
 	}
 	return normalized, nil
@@ -1074,6 +1109,10 @@ func (m *Manager) DeleteNode(ctx context.Context, name string) error {
 		return fmt.Errorf("save config: %w", err)
 	}
 	if err := m.deleteStoreNode(ctx, name); err != nil {
+		if m.cfg.FilePath() == "" {
+			m.cfg.Nodes = backup
+			return fmt.Errorf("delete store node: %w", err)
+		}
 		m.logger.Warnf("failed to delete node from store: %v", err)
 	}
 	return nil
@@ -1104,12 +1143,6 @@ func (m *Manager) ReloadWithPortMap(newCfg *config.Config, portMap map[string]ui
 		return errors.New("new config is nil")
 	}
 
-	// Apply port mapping to preserve existing node ports
-	if portMap != nil && len(portMap) > 0 {
-		if err := newCfg.NormalizeWithPortMap(portMap); err != nil {
-			return fmt.Errorf("normalize config with port map: %w", err)
-		}
-	}
 	if m.store != nil {
 		if err := m.syncStoreFromConfig(context.Background(), newCfg); err != nil {
 			m.logger.Warnf("failed to sync nodes to store: %v", err)
@@ -1117,6 +1150,9 @@ func (m *Manager) ReloadWithPortMap(newCfg *config.Config, portMap map[string]ui
 		if err := m.applyStoreNodeState(context.Background(), newCfg); err != nil {
 			m.logger.Warnf("failed to apply store node state: %v", err)
 		}
+	}
+	if err := newCfg.NormalizeWithPortMap(portMap); err != nil {
+		return fmt.Errorf("normalize config with port map: %w", err)
 	}
 
 	return m.Reload(newCfg)
@@ -1180,17 +1216,35 @@ func (m *Manager) applyStoreNodeState(ctx context.Context, cfg *config.Config) e
 	if err != nil {
 		return fmt.Errorf("list store nodes: %w", err)
 	}
-	enabledByURI := make(map[string]bool, len(storeNodes))
+	storeByURI := make(map[string]store.Node, len(storeNodes))
 	for _, node := range storeNodes {
-		enabledByURI[node.URI] = node.Enabled
+		storeByURI[node.URI] = node
 	}
 
+	seen := make(map[string]struct{}, len(cfg.Nodes))
 	filtered := cfg.Nodes[:0]
 	for _, node := range cfg.Nodes {
-		if enabled, ok := enabledByURI[node.URI]; ok && !enabled {
+		seen[node.URI] = struct{}{}
+		if storeNode, ok := storeByURI[node.URI]; ok && !storeNode.Enabled {
 			continue
 		}
 		filtered = append(filtered, node)
+	}
+	for _, node := range storeNodes {
+		if !node.Enabled {
+			continue
+		}
+		if _, ok := seen[node.URI]; ok {
+			continue
+		}
+		filtered = append(filtered, config.NodeConfig{
+			Name:     node.Name,
+			URI:      node.URI,
+			Port:     node.Port,
+			Username: node.Username,
+			Password: node.Password,
+			Source:   config.NodeSource(node.Source),
+		})
 	}
 	cfg.Nodes = filtered
 	return nil

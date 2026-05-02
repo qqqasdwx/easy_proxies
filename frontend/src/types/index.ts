@@ -110,7 +110,6 @@ export interface SettingsData {
   management_enabled: boolean
   management_listen: string
   management_probe_target: string
-  management_password: string
   management_health_check_interval: string
 
   // Subscription refresh

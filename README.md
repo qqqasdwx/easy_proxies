@@ -10,7 +10,7 @@
 - **Wide protocol support**: VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5, HTTP/HTTPS
 - **Automatic health checking** with configurable failure thresholds and blacklist duration, plus manual blacklist/release from the dashboard
 - **GeoIP region routing**: classify nodes by country and route traffic through a specific region via a dedicated HTTP proxy endpoint
-- **Multiple node sources**: inline config, `nodes.txt` file, or subscription URLs (Base64, plain text, Clash YAML)
+- **Multiple node sources**: WebUI/SQLite nodes, inline config, legacy `nodes.txt` file, or subscription URLs (Base64, plain text, Clash YAML)
 - **Subscription auto-refresh with hot-reload**: periodically fetches subscription updates and reloads without restart
 - **WebUI dashboard**: real-time node status, traffic charts, diagnostics, log console, and full settings management
 - **Management API**: RESTful endpoints for node CRUD, probing, blacklisting, subscription management, and config reload
@@ -20,33 +20,27 @@
 
 ## Quick Start
 
-### 1. Prepare Configuration
+### 1. Start the Management UI
 
 ```bash
-cp config.example.yaml config.yaml
-touch nodes.txt
 mkdir -p logs data
-```
-
-Edit `config.yaml` and add your proxy nodes (inline nodes, `nodes.txt` file, or subscription URLs).
-
-> **Important**: `config.yaml` and `nodes.txt` MUST exist as files before starting the Docker container. If they don't exist, Docker will create them as directories, causing startup failure. Use `start.sh` to avoid this issue.
-
-### 2. Run with Docker (Recommended)
-
-```bash
-./start.sh
-# or manually:
 docker compose up -d
 ```
 
-### 3. Run from Source
+The default container starts without `config.yaml` or `nodes.txt` and listens only on the management WebUI/API port.
 
 ```bash
-go run ./cmd/easy_proxies --config config.yaml
+MANAGEMENT_PORT=19091 docker compose up -d
+MANAGEMENT_PASSWORD='change-me' docker compose up -d
 ```
 
-### 4. Access WebUI
+### 2. Run from Source
+
+```bash
+go run ./cmd/easy_proxies
+```
+
+### 3. Access WebUI
 
 Open `http://localhost:9091` in your browser.
 
@@ -94,7 +88,6 @@ management:
   enabled: true
   listen: 0.0.0.0:9091
   probe_target: http://cp.cloudflare.com/generate_204
-  password: ""
 
 dns:
   server: 223.5.5.5
@@ -108,7 +101,7 @@ nodes_file: nodes.txt
 
 See [config.example.yaml](config.example.yaml) for the full documented configuration with all available options.
 
-`database_path` points to the optional SQLite store. It persists WebUI-managed nodes, disabled flags, sessions, and traffic statistics while keeping `config.yaml` and `nodes.txt` compatible. See [SQLite Store Migration Guide](docs/sqlite-migration.md).
+`database_path` points to the SQLite store. It persists WebUI-managed nodes, disabled flags, sessions, and traffic statistics. `config.yaml` and `nodes.txt` remain supported for legacy file-based deployments. See [SQLite Store Migration Guide](docs/sqlite-migration.md).
 
 ## GeoIP Region Routing
 
@@ -285,7 +278,7 @@ subscription_refresh:
   interval: 1h
 ```
 
-Supports Base64, plain text, and Clash YAML formats. When subscriptions are configured, fetched nodes are written to `nodes_file`. Subscription changes trigger automatic hot-reload without restart.
+Supports Base64, plain text, and Clash YAML formats. By default, fetched nodes are applied to runtime state and persisted in SQLite; `nodes_file` is written only when explicitly configured. Subscription changes trigger automatic hot-reload without restart.
 
 ## WebUI Dashboard
 
@@ -297,9 +290,9 @@ Features:
 - **Node Config**: Add/edit/delete/import nodes, batch enable/disable, and subscription URLs
 - **Diagnostics**: Connectivity testing and node state export
 - **Console**: Application logs from the in-memory ring buffer (last 1000 lines)
-- **Settings**: All configuration options editable from the browser, changes persist to `config.yaml`
+- **Settings**: Runtime options are editable from the browser; node state persists in SQLite
 
-When `management.password` is empty, authentication is bypassed.
+Set `MANAGEMENT_PASSWORD` to require login. The management password is never read from or written to config files.
 
 ## Management API
 
@@ -328,7 +321,7 @@ When `management.password` is empty, authentication is bypassed.
 
 ### docker-compose.yml
 
-The default setup uses host networking (recommended for automatic port management). Volumes mount `config.yaml` and `nodes.txt`:
+The default setup exposes only the management port and persists SQLite/log data:
 
 ```yaml
 services:
@@ -336,19 +329,20 @@ services:
     image: ghcr.io/jasonwong1991/easy_proxies:latest
     container_name: easy_proxies
     restart: unless-stopped
-    network_mode: host
+    environment:
+      MANAGEMENT_PORT: ${MANAGEMENT_PORT:-9091}
+      MANAGEMENT_PASSWORD: ${MANAGEMENT_PASSWORD:-}
+    ports:
+      - "${MANAGEMENT_PORT:-9091}:${MANAGEMENT_PORT:-9091}"
     volumes:
-      - ./config.yaml:/etc/easy_proxies/config.yaml
-      - ./nodes.txt:/etc/easy_proxies/nodes.txt
+      - ./data:/app/data
       - ./logs:/app/logs
-      - ./data:/etc/easy_proxies/data
 ```
 
 ### Important Notes
 
-- **Create mutable paths first**: `config.yaml` and `nodes.txt` must exist as files, and `logs/` / `data/` should exist as directories before running `docker compose up`. Use `./start.sh` which handles this automatically.
-- **Permissions**: Files need write permission for WebUI settings to persist (`chmod 666 config.yaml nodes.txt`).
 - **SQLite data**: keep `./data` mounted to preserve WebUI node state, sessions, and traffic totals across restarts.
+- **Management password**: set `MANAGEMENT_PASSWORD`; it is not a config item.
 - **Multi-platform**: Supports amd64 and arm64 architectures.
 - **Reload**: `/api/reload` and subscription refresh will interrupt active connections.
 

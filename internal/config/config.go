@@ -90,7 +90,7 @@ type ManagementConfig struct {
 	Enabled     *bool  `yaml:"enabled"`
 	Listen      string `yaml:"listen"`
 	ProbeTarget string `yaml:"probe_target"`
-	Password    string `yaml:"password"` // WebUI 访问密码，为空则不需要密码
+	Password    string `yaml:"-"` // WebUI 访问密码，只从环境变量读取，为空则不需要密码
 }
 
 // SubscriptionRefreshConfig controls subscription auto-refresh and reload settings.
@@ -110,12 +110,18 @@ const (
 	NodeSourceInline       NodeSource = "inline"       // Defined directly in config.yaml nodes array
 	NodeSourceFile         NodeSource = "nodes_file"   // Loaded from external nodes file
 	NodeSourceSubscription NodeSource = "subscription" // Fetched from subscription URL
+	NodeSourceManual       NodeSource = "manual"       // Managed through WebUI/API and persisted in SQLite
 )
 
 const (
 	InboundProtocolHTTP   = "http"
 	InboundProtocolSOCKS5 = "socks5"
 	InboundProtocolMixed  = "mixed"
+)
+
+const (
+	EnvManagementPort     = "MANAGEMENT_PORT"
+	EnvManagementPassword = "MANAGEMENT_PASSWORD"
 )
 
 // NormalizeInboundProtocol normalizes inbound protocol aliases and validates the value.
@@ -178,6 +184,13 @@ func (n *NodeConfig) NodeKey() string {
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			var cfg Config
+			if err := cfg.normalize(); err != nil {
+				return nil, err
+			}
+			return &cfg, nil
+		}
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 	var cfg Config
@@ -283,7 +296,7 @@ func (c *Config) normalize() error {
 		return err
 	}
 	if c.Management.Listen == "" {
-		c.Management.Listen = "127.0.0.1:9091"
+		c.Management.Listen = "0.0.0.0:9091"
 	}
 	if c.Management.ProbeTarget == "" {
 		c.Management.ProbeTarget = "www.apple.com:80"
@@ -328,7 +341,7 @@ func (c *Config) normalize() error {
 		c.Nodes = append(c.Nodes, fileNodes...)
 	}
 
-	// Load nodes from subscriptions (highest priority - writes to nodes.txt)
+	// Load nodes from subscriptions.
 	if len(c.Subscriptions) > 0 {
 		var subNodes []NodeConfig
 		subTimeout := c.SubscriptionRefresh.Timeout
@@ -341,26 +354,19 @@ func (c *Config) normalize() error {
 			log.Printf("✅ Loaded %d nodes from subscription", len(nodes))
 			subNodes = append(subNodes, nodes...)
 		}
-		// Mark subscription nodes and write to nodes.txt
+		// Mark subscription nodes and optionally write them to an explicitly configured nodes file.
 		for idx := range subNodes {
 			subNodes[idx].Source = NodeSourceSubscription
 		}
-		if len(subNodes) > 0 {
-			// Determine nodes.txt path
-			nodesFilePath := c.NodesFile
-			if nodesFilePath == "" {
-				nodesFilePath = filepath.Join(filepath.Dir(c.filePath), "nodes.txt")
-				c.NodesFile = nodesFilePath
-			}
-			// Write subscription nodes to nodes.txt
-			if err := writeNodesToFile(nodesFilePath, subNodes); err != nil {
-				log.Printf("⚠️ Failed to write nodes to %q: %v", nodesFilePath, err)
+		if len(subNodes) > 0 && c.NodesFile != "" {
+			if err := writeNodesToFile(c.NodesFile, subNodes); err != nil {
+				log.Printf("⚠️ Failed to write nodes to %q: %v", c.NodesFile, err)
 			} else {
-				log.Printf("✅ Written %d subscription nodes to %s", len(subNodes), nodesFilePath)
+				log.Printf("✅ Written %d subscription nodes to %s", len(subNodes), c.NodesFile)
 			}
 		}
 		c.Nodes = append(c.Nodes, subNodes...)
-		// Fallback: if all subscriptions failed, try loading cached nodes.txt
+		// Fallback: if all subscriptions failed, try loading the explicitly configured cache file.
 		if len(subNodes) == 0 && c.NodesFile != "" {
 			cachedNodes, err := loadNodesFromFile(c.NodesFile)
 			if err == nil && len(cachedNodes) > 0 {
@@ -370,9 +376,6 @@ func (c *Config) normalize() error {
 		}
 	}
 
-	if len(c.Nodes) == 0 {
-		return errors.New("config.nodes cannot be empty (configure nodes in config or use nodes_file)")
-	}
 	portCursor := c.MultiPort.BasePort
 	for idx := range c.Nodes {
 		c.Nodes[idx].Name = strings.TrimSpace(c.Nodes[idx].Name)
@@ -446,6 +449,10 @@ func (c *Config) normalize() error {
 		}
 	}
 
+	if err := c.applyEnvironmentOverrides(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -500,7 +507,7 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		return err
 	}
 	if c.Management.Listen == "" {
-		c.Management.Listen = "127.0.0.1:9091"
+		c.Management.Listen = "0.0.0.0:9091"
 	}
 	if c.Management.ProbeTarget == "" {
 		c.Management.ProbeTarget = "www.apple.com:80"
@@ -524,10 +531,6 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	}
 	if c.SubscriptionRefresh.MinAvailableNodes <= 0 {
 		c.SubscriptionRefresh.MinAvailableNodes = 1
-	}
-
-	if len(c.Nodes) == 0 {
-		return errors.New("config.nodes cannot be empty")
 	}
 
 	// Build set of ports already assigned from portMap
@@ -598,6 +601,10 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 
 	c.normalizeLogConfig()
 
+	if err := c.applyEnvironmentOverrides(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -622,6 +629,42 @@ func (c *Config) normalizeLogConfig() {
 	if c.Log.MaxAge <= 0 {
 		c.Log.MaxAge = 7
 	}
+}
+
+func (c *Config) applyEnvironmentOverrides() error {
+	if portValue, ok := firstEnv(EnvManagementPort); ok {
+		port, err := strconv.ParseUint(strings.TrimSpace(portValue), 10, 16)
+		if err != nil || port == 0 {
+			return fmt.Errorf("%s must be a TCP port between 1 and 65535", EnvManagementPort)
+		}
+		c.Management.Listen = replaceListenPort(c.Management.Listen, uint16(port))
+	}
+	if password, ok := firstEnv(EnvManagementPassword); ok {
+		c.Management.Password = password
+	} else {
+		c.Management.Password = ""
+	}
+	return nil
+}
+
+func firstEnv(names ...string) (string, bool) {
+	for _, name := range names {
+		value, ok := os.LookupEnv(name)
+		if ok {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func replaceListenPort(listen string, port uint16) string {
+	host := "0.0.0.0"
+	if listen != "" {
+		if h, _, err := net.SplitHostPort(listen); err == nil {
+			host = h
+		}
+	}
+	return net.JoinHostPort(host, strconv.Itoa(int(port)))
 }
 
 // ManagementEnabled reports whether the monitoring endpoint should run.
@@ -1170,7 +1213,7 @@ func (c *Config) SaveNodes() error {
 		return errors.New("config is nil")
 	}
 	if c.filePath == "" {
-		return errors.New("config file path is unknown")
+		return nil
 	}
 
 	// Separate nodes by source
@@ -1248,7 +1291,7 @@ func (c *Config) SaveSettings() error {
 		return errors.New("config is nil")
 	}
 	if c.filePath == "" {
-		return errors.New("config file path is unknown")
+		return nil
 	}
 
 	data, err := os.ReadFile(c.filePath)

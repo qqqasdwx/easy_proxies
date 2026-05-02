@@ -25,9 +25,8 @@ const defaultSettings: SettingsData = {
   pool_blacklist_duration: '24h0m0s',
 
   management_enabled: true,
-  management_listen: '0.0.0.0:9090',
+  management_listen: '0.0.0.0:9091',
   management_probe_target: '',
-  management_password: '',
   management_health_check_interval: '2h0m0s',
 
   sub_refresh_enabled: false,
@@ -615,17 +614,6 @@ export default function SettingsPanel() {
             <p className="label text-base-content/50 mt-1">Go duration 格式：如 2h、30m、1h30m（修改后立即生效，无需重载）</p>
           </fieldset>
 
-          <fieldset className="fieldset">
-            <legend className="fieldset-legend font-semibold text-base-content/80">WebUI 密码</legend>
-            <input
-              type="text"
-              className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
-              placeholder="为空则无需密码"
-              value={settings.management_password}
-              onChange={(e) => updateField('management_password', e.target.value)}
-            />
-            <p className="label text-base-content/50 mt-1">为空则不需要登录密码</p>
-          </fieldset>
         </div>
 
         {/* ===== GeoIP ===== */}

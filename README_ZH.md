@@ -11,8 +11,9 @@ Easy Proxies 是一个基于 sing-box 的代理池管理工具。
 - 运行模式：`pool`、`multi-port`、`hybrid`。
 - 实际构建的上游协议：`vmess`、`vless`、`trojan`、`ss/shadowsocks`、`hysteria2/hy2`、`socks5/socks`、`http/https`、`anytls`、`tuic`。
 - 节点来源：
+  - WebUI/SQLite 管理节点
   - `config.yaml` 的 `nodes`
-  - `nodes_file`（每行一个 URI）
+  - legacy `nodes_file`（每行一个 URI）
   - `subscriptions`（支持 Base64/纯文本/Clash YAML 解析）
 - 自动健康检查、失败熔断和黑名单恢复。
 - Web 管理面板 + API：
@@ -25,34 +26,30 @@ Easy Proxies 是一个基于 sing-box 的代理池管理工具。
 - 新增可配置 DNS 解析器（对 VMess 域名节点非常关键）。
 - 可选 GeoIP 标记（支持 JP/KR/US/HK/TW/SG 地域分区，可在 WebUI 中开关，支持自动更新和热重载）。
 - **可配置日志轮转**，支持大小限制、备份数量和压缩。
-- **可选 SQLite store**，持久化 WebUI 节点、禁用状态、会话和流量统计，同时兼容 `config.yaml` / `nodes.txt`。
+- **SQLite store**，持久化 WebUI 节点、禁用状态、会话和流量统计，同时兼容 legacy `config.yaml` / `nodes.txt`。
 
 ## 快速开始
 
-### 1）准备配置
+### 1）启动管理端
 
 ```bash
-cp config.example.yaml config.yaml
-cp nodes.example nodes.txt
 mkdir -p logs data
+docker compose up -d
 ```
 
-编辑 `config.yaml`，并配置节点来源（`nodes.txt` / `subscriptions` / `nodes`）。
+默认不需要 `config.yaml` 或 `nodes.txt`，首次启动只监听管理端 `9091`。
 
-### 2）启动
-
-Docker：
+管理端口和登录密码通过 Docker 环境变量设置：
 
 ```bash
-./start.sh
-# 或
-docker compose up -d
+MANAGEMENT_PORT=19091 docker compose up -d
+MANAGEMENT_PASSWORD='change-me' docker compose up -d
 ```
 
 本地运行：
 
 ```bash
-go run ./cmd/easy_proxies -config config.yaml
+go run ./cmd/easy_proxies
 ```
 
 ## 最小配置示例（Pool）
@@ -77,7 +74,6 @@ management:
   enabled: true
   listen: 0.0.0.0:9091
   probe_target: http://cp.cloudflare.com/generate_204
-  password: ""
 
 dns:
   server: 223.5.5.5
@@ -123,12 +119,11 @@ dns:
 
 ## 节点来源行为
 
-`database_path` 指向可选 SQLite store。它会持久化 WebUI 手动节点、禁用状态、登录会话和运行统计；`config.yaml` 与 `nodes.txt` 仍保持兼容。
+`database_path` 指向 SQLite store。它会持久化 WebUI 手动节点、禁用状态、登录会话和运行统计；`config.yaml` 与 `nodes.txt` 仅作为 legacy 文件模式保持兼容。
 
 - 配置了 `subscriptions` 时：
   - 会抓取订阅节点并追加到运行节点列表
-  - `nodes_file` 作为订阅节点写入路径
-  - 启动阶段不再从 `nodes_file` 读取节点
+  - 默认写入 SQLite；只有显式配置 `nodes_file` 时才写入文件
 - `nodes`（内联节点）只要存在就会参与运行。
 
 ## SQLite 迁移说明
@@ -139,19 +134,17 @@ dns:
 database_path: data/data.db
 ```
 
-从旧版本升级时，保留原有 `config.yaml` 和 `nodes.txt`，创建 `data/` 目录后直接启动即可：
+从旧版本升级时，可保留原有 `config.yaml` 和 `nodes.txt`；新部署只需要创建 `data/` 和 `logs/`：
 
 ```bash
 mkdir -p data logs
 docker compose up -d
 ```
 
-首次启动会把已有节点按 URI 同步到 SQLite，不会重复插入。之后 WebUI 中的新增、禁用、删除和流量累计会写入 `data/data.db`。升级和备份时请同时保留：
+首次启动会把已有节点按 URI 同步到 SQLite，不会重复插入。之后 WebUI 中的新增、禁用、删除和流量累计会写入 `data/data.db`。升级和备份时至少保留：
 
-- `config.yaml`
-- `nodes.txt`
-- `logs/`
 - `data/`
+- `logs/`
 
 更详细的说明见 [SQLite Store Migration Guide](docs/sqlite-migration.md)。
 
@@ -191,12 +184,12 @@ docker compose up -d
 - `GET /api/logs`
 - `POST /api/reload`
 
-`management.password` 为空时，Web/API 不要求登录。
+设置 `MANAGEMENT_PASSWORD` 后 Web/API 才要求登录；管理密码不作为配置项出现。
 
 ## 重要运行说明
 
 - 重载（`/api/reload` 或订阅刷新）会中断现有连接。
-- Settings API 会把配置写回 `config.yaml`；部分设置需要重载后才能完全生效。
+- 无配置文件启动时，Settings API 修改运行时设置；节点和统计数据持久化到 SQLite。
 - 省略项默认值可在 `internal/config/config.go` 中查看。
 - 日志轮转通过 `log` 配置段设置；当 `output: file` 时，日志同时写入控制台和文件，并自动轮转。
 

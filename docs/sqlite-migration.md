@@ -1,31 +1,28 @@
 # SQLite Store Migration Guide
 
-Easy Proxies now uses an optional SQLite store at `database_path` (default `data/data.db`) to persist WebUI-managed nodes, disabled flags, sessions, and runtime statistics. Existing `config.yaml` and `nodes.txt` workflows continue to work.
+Easy Proxies uses a SQLite store at `database_path` (default `data/data.db`) to persist WebUI-managed nodes, disabled flags, sessions, and runtime statistics. Existing `config.yaml` and `nodes.txt` workflows continue to work as legacy file mode.
 
 ## What Changes
 
-- `config.yaml` remains the primary configuration file.
-- `nodes.txt` remains supported for file-based node lists and subscription write-back.
-- SQLite mirrors nodes on startup and preserves WebUI state such as disabled nodes and traffic totals.
+- A new deployment can start without `config.yaml` or `nodes.txt`.
+- With no nodes configured, only the management WebUI/API listener starts.
+- `nodes.txt` remains supported only when `nodes_file` is explicitly configured.
+- SQLite restores WebUI nodes on startup and preserves disabled nodes and traffic totals.
 - If the database cannot be opened, the app logs a warning and continues in file-compatible mode.
 
 ## Docker Volumes
 
-Keep all mutable files mounted:
+Keep the mutable data directories mounted:
 
 ```yaml
 volumes:
-  - ./config.yaml:/etc/easy_proxies/config.yaml
-  - ./nodes.txt:/etc/easy_proxies/nodes.txt
+  - ./data:/app/data
   - ./logs:/app/logs
-  - ./data:/etc/easy_proxies/data
 ```
 
 Create them before first start:
 
 ```bash
-cp config.example.yaml config.yaml
-touch nodes.txt
 mkdir -p logs data
 ```
 
@@ -47,12 +44,16 @@ mkdir -p logs data
 
 4. Use the WebUI node management page for add/edit/disable/delete. After those actions, reload from the WebUI when prompted.
 
+## Management Password
+
+Set `MANAGEMENT_PASSWORD` to require WebUI/API login. The password is read only from the process environment and is never written to `config.yaml` or returned by the settings API.
+
 ## Rollback
 
-Stop the service and remove or change `database_path` if you need pure file mode. Keep `config.yaml` and `nodes.txt`; do not delete `data/` unless you intentionally want to discard WebUI state and runtime statistics.
+Stop the service and remove or change `database_path` if you need pure file mode. Keep `config.yaml` and `nodes.txt` if you still use them; do not delete `data/` unless you intentionally want to discard WebUI state and runtime statistics.
 
 ## Notes
 
 - Do not commit `data/`, `*.db`, `*.db-shm`, or `*.db-wal`.
-- Back up `config.yaml`, `nodes.txt`, and `data/` together before major upgrades.
+- Back up `data/` before major upgrades; include `config.yaml` and `nodes.txt` only if you still use legacy file mode.
 - Disabled nodes are stored in SQLite and are not selected during sing-box config generation.

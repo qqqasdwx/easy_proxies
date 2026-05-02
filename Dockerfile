@@ -23,14 +23,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates gosu \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -u 10001 easy \
-    && mkdir -p /etc/easy_proxies/data \
-    && chown -R easy:easy /etc/easy_proxies
+    && mkdir -p /app/data /app/logs /etc/easy_proxies \
+    && chown -R easy:easy /app /etc/easy_proxies
 WORKDIR /app
 COPY --from=builder /src/easy_proxies /usr/local/bin/easy_proxies
-COPY --chown=easy:easy config.example.yaml /etc/easy_proxies/config.yaml
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
-# Pool/Hybrid mode: 2323, Management: 9091, Multi-port/Hybrid mode: 24000-24200
-EXPOSE 2323 9091 24000-24200
+# Management WebUI/API; proxy listener ports are opened only after nodes are configured.
+EXPOSE 9091
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["--config", "/etc/easy_proxies/config.yaml"]

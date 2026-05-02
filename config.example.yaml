@@ -37,7 +37,7 @@ skip_cert_verify: false
 # external_ip: "your.public.ip"
 
 # SQLite 数据库文件路径（默认 data/data.db，相对于配置文件目录）
-# 用于持久化 WebUI 手动节点、禁用状态、会话和运行统计；config.yaml / nodes.txt 仍兼容。
+# 用于持久化 WebUI 手动节点、禁用状态、会话和运行统计。
 database_path: data/data.db
 
 # ───────────────────────────────────────────────────────────────
@@ -78,7 +78,8 @@ management:
   enabled: true                                      # 是否启用管理面板
   listen: 0.0.0.0:9091                               # 监听地址
   probe_target: http://cp.cloudflare.com/generate_204  # 健康检查目标
-  password: ""                                       # React WebUI/API 访问密码，为空则不需要登录
+# WebUI/API 密码不在配置文件中设置，只读取环境变量：
+# MANAGEMENT_PASSWORD=your_password
 
 # ───────────────────────────────────────────────────────────────
 # DNS 配置（用于节点域名解析，尤其是 VMess）
@@ -121,7 +122,7 @@ geoip:
 # ═══════════════════════════════════════════════════════════════
 
 # ───────────────────────────────────────────────────────────────
-# 方式 1: 订阅链接（推荐，自动获取并写入 nodes.txt）
+# 方式 1: 订阅链接（推荐，自动获取并写入 SQLite）
 # ───────────────────────────────────────────────────────────────
 # subscriptions:
 #   - "https://example.com/subscribe?token=xxx"
