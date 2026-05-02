@@ -70,12 +70,12 @@ type SubscriptionStatus struct {
 
 // Server exposes HTTP endpoints for monitoring.
 type Server struct {
-	cfg          Config
-	cfgMu        sync.RWMutex   // 保护动态配置字段
-	cfgSrc       *config.Config // 可持久化的配置对象
-	mgr          *Manager
-	srv          *http.Server
-	logger       *log.Logger
+	cfg    Config
+	cfgMu  sync.RWMutex   // 保护动态配置字段
+	cfgSrc *config.Config // 可持久化的配置对象
+	mgr    *Manager
+	srv    *http.Server
+	logger *log.Logger
 
 	// Session management
 	sessionMu  sync.RWMutex
@@ -654,6 +654,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 //   - scheme=all    (同时导出 HTTP 和 SOCKS5)
 //
 // 在 pool/hybrid 模式下，还会导出 Pool 代理池入口和 GeoIP 分区路由入口。
+// 导出内容会遵循 listener.protocol 与 multi_port.protocol。
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -680,10 +681,12 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.RLock()
 	mode := ""
 	var listenerCfg config.ListenerConfig
+	var multiPortCfg config.MultiPortConfig
 	var geoipCfg config.GeoIPConfig
 	if s.cfgSrc != nil {
 		mode = s.cfgSrc.Mode
 		listenerCfg = s.cfgSrc.Listener
+		multiPortCfg = s.cfgSrc.MultiPort
 		geoipCfg = s.cfgSrc.GeoIP
 	}
 	s.cfgMu.RUnlock()
@@ -700,21 +703,15 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		if listenerCfg.Username != "" && listenerCfg.Password != "" {
 			poolAuth = fmt.Sprintf("%s:%s@", listenerCfg.Username, listenerCfg.Password)
 		}
-		lines = append(lines, "# Pool 代理池入口")
-		poolHTTP := fmt.Sprintf("http://%s%s:%d", poolAuth, poolAddr, listenerCfg.Port)
-		poolSocks := fmt.Sprintf("socks5://%s%s:%d", poolAuth, poolAddr, listenerCfg.Port)
-		switch scheme {
-		case "http":
-			lines = append(lines, poolHTTP)
-			seen[poolHTTP] = true
-		case "socks5":
-			lines = append(lines, poolSocks)
-			seen[poolSocks] = true
-		case "all":
-			lines = append(lines, poolHTTP)
-			seen[poolHTTP] = true
-			lines = append(lines, poolSocks)
-			seen[poolSocks] = true
+		poolURIs := exportProxyURIsForProtocol(listenerCfg.Protocol, scheme, poolAuth, poolAddr, listenerCfg.Port)
+		if len(poolURIs) > 0 {
+			lines = append(lines, "# Pool 代理池入口")
+			for _, uri := range poolURIs {
+				if !seen[uri] {
+					lines = append(lines, uri)
+					seen[uri] = true
+				}
+			}
 		}
 	}
 
@@ -747,48 +744,35 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Multi-port 独立节点
+	multiPortHeaderAdded := false
 	if len(snapshots) > 0 && (mode == "hybrid" || mode == "multi-port" || mode == "") {
-		lines = append(lines, "# Multi-port 独立节点")
-	}
-	for _, snap := range snapshots {
-		// 只导出有监听地址和端口的节点
-		if snap.ListenAddress == "" || snap.Port == 0 {
-			continue
-		}
+		for _, snap := range snapshots {
+			// 只导出有监听地址和端口的节点
+			if snap.ListenAddress == "" || snap.Port == 0 {
+				continue
+			}
 
-		listenAddr := snap.ListenAddress
-		if listenAddr == "0.0.0.0" || listenAddr == "::" {
-			if extIP, _, _, _ := s.getSettings(); extIP != "" {
-				listenAddr = extIP
+			listenAddr := snap.ListenAddress
+			if listenAddr == "0.0.0.0" || listenAddr == "::" {
+				if extIP, _, _, _ := s.getSettings(); extIP != "" {
+					listenAddr = extIP
+				}
 			}
-		}
 
-		var authPart string
-		if s.cfg.ProxyUsername != "" && s.cfg.ProxyPassword != "" {
-			authPart = fmt.Sprintf("%s:%s@", s.cfg.ProxyUsername, s.cfg.ProxyPassword)
-		}
-		httpURI := fmt.Sprintf("http://%s%s:%d", authPart, listenAddr, snap.Port)
-		socksURI := fmt.Sprintf("socks5://%s%s:%d", authPart, listenAddr, snap.Port)
-
-		switch scheme {
-		case "http":
-			if !seen[httpURI] {
-				lines = append(lines, httpURI)
-				seen[httpURI] = true
+			var authPart string
+			if multiPortCfg.Username != "" && multiPortCfg.Password != "" {
+				authPart = fmt.Sprintf("%s:%s@", multiPortCfg.Username, multiPortCfg.Password)
 			}
-		case "socks5":
-			if !seen[socksURI] {
-				lines = append(lines, socksURI)
-				seen[socksURI] = true
-			}
-		case "all":
-			if !seen[httpURI] {
-				lines = append(lines, httpURI)
-				seen[httpURI] = true
-			}
-			if !seen[socksURI] {
-				lines = append(lines, socksURI)
-				seen[socksURI] = true
+			uris := exportProxyURIsForProtocol(multiPortCfg.Protocol, scheme, authPart, listenAddr, snap.Port)
+			for _, uri := range uris {
+				if !seen[uri] {
+					if !multiPortHeaderAdded {
+						lines = append(lines, "# Multi-port 独立节点")
+						multiPortHeaderAdded = true
+					}
+					lines = append(lines, uri)
+					seen[uri] = true
+				}
 			}
 		}
 	}
@@ -803,6 +787,36 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 	_, _ = w.Write([]byte(strings.Join(lines, "\n")))
+}
+
+func exportProxyURIsForProtocol(protocol, scheme, auth, address string, port uint16) []string {
+	normalized, err := config.NormalizeInboundProtocol(protocol)
+	if err != nil {
+		normalized = config.InboundProtocolMixed
+	}
+
+	httpURI := fmt.Sprintf("http://%s%s:%d", auth, address, port)
+	socksURI := fmt.Sprintf("socks5://%s%s:%d", auth, address, port)
+	switch normalized {
+	case config.InboundProtocolHTTP:
+		if scheme == "http" || scheme == "all" {
+			return []string{httpURI}
+		}
+	case config.InboundProtocolSOCKS5:
+		if scheme == "socks5" || scheme == "all" {
+			return []string{socksURI}
+		}
+	default:
+		switch scheme {
+		case "http":
+			return []string{httpURI}
+		case "socks5":
+			return []string{socksURI}
+		case "all":
+			return []string{httpURI, socksURI}
+		}
+	}
+	return nil
 }
 
 // handleSettings handles GET/PUT for dynamic settings (external_ip, probe_target, skip_cert_verify, log).
@@ -842,12 +856,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			resp["listener"] = map[string]any{
 				"address":  cfg.Listener.Address,
 				"port":     cfg.Listener.Port,
+				"protocol": cfg.Listener.Protocol,
 				"username": cfg.Listener.Username,
 				"password": cfg.Listener.Password,
 			}
 			resp["multi_port"] = map[string]any{
 				"address":   cfg.MultiPort.Address,
 				"base_port": cfg.MultiPort.BasePort,
+				"protocol":  cfg.MultiPort.Protocol,
 				"username":  cfg.MultiPort.Username,
 				"password":  cfg.MultiPort.Password,
 			}
@@ -879,12 +895,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			Listener       *struct {
 				Address  string `json:"address"`
 				Port     uint16 `json:"port"`
+				Protocol string `json:"protocol"`
 				Username string `json:"username"`
 				Password string `json:"password"`
 			} `json:"listener,omitempty"`
 			MultiPort *struct {
 				Address  string `json:"address"`
 				BasePort uint16 `json:"base_port"`
+				Protocol string `json:"protocol"`
 				Username string `json:"username"`
 				Password string `json:"password"`
 			} `json:"multi_port,omitempty"`
@@ -933,12 +951,32 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		var listenerProtocol string
+		if req.Listener != nil && req.Listener.Protocol != "" {
+			normalized, err := config.NormalizeInboundProtocol(req.Listener.Protocol)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			listenerProtocol = normalized
+		}
+		var multiPortProtocol string
+		if req.MultiPort != nil && req.MultiPort.Protocol != "" {
+			normalized, err := config.NormalizeInboundProtocol(req.MultiPort.Protocol)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			multiPortProtocol = normalized
+		}
+
 		if err := s.updateSettings(extIP, probeTarget, req.SkipCertVerify, logCfg, req.GeoIP != nil && req.GeoIP.Enabled); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]any{"error": err.Error()})
 			return
 		}
-
 
 		// Update extended settings
 		s.cfgMu.Lock()
@@ -949,12 +987,18 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			if req.Listener != nil {
 				s.cfgSrc.Listener.Address = req.Listener.Address
 				s.cfgSrc.Listener.Port = req.Listener.Port
+				if listenerProtocol != "" {
+					s.cfgSrc.Listener.Protocol = listenerProtocol
+				}
 				s.cfgSrc.Listener.Username = req.Listener.Username
 				s.cfgSrc.Listener.Password = req.Listener.Password
 			}
 			if req.MultiPort != nil {
 				s.cfgSrc.MultiPort.Address = req.MultiPort.Address
 				s.cfgSrc.MultiPort.BasePort = req.MultiPort.BasePort
+				if multiPortProtocol != "" {
+					s.cfgSrc.MultiPort.Protocol = multiPortProtocol
+				}
 				s.cfgSrc.MultiPort.Username = req.MultiPort.Username
 				s.cfgSrc.MultiPort.Password = req.MultiPort.Password
 			}

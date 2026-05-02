@@ -67,6 +67,10 @@ Open `http://localhost:9091` in your browser.
 | `random` | Random node selection |
 | `balance` | Least-connections balancing |
 
+### Inbound Protocol
+
+`listener.protocol` controls the pool entrypoint and `multi_port.protocol` controls per-node entrypoints. Supported values are `mixed` (default, HTTP + SOCKS5), `http`, and `socks5`.
+
 ### Minimal Config Example
 
 ```yaml
@@ -75,6 +79,7 @@ mode: pool
 listener:
   address: 0.0.0.0
   port: 2323
+  protocol: mixed        # mixed / http / socks5
   username: user
   password: pass
 

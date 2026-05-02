@@ -59,10 +59,11 @@ type GeoIPConfig struct {
 	AutoUpdateInterval time.Duration `yaml:"auto_update_interval"` // 自动更新间隔，默认 24 小时
 }
 
-// ListenerConfig defines how the HTTP/SOCKS5 mixed proxy should listen for clients.
+// ListenerConfig defines how the proxy should listen for clients.
 type ListenerConfig struct {
 	Address  string `yaml:"address"`
 	Port     uint16 `yaml:"port"`
+	Protocol string `yaml:"protocol"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
 }
@@ -78,6 +79,7 @@ type PoolConfig struct {
 type MultiPortConfig struct {
 	Address  string `yaml:"address"`
 	BasePort uint16 `yaml:"base_port"`
+	Protocol string `yaml:"protocol"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
 }
@@ -108,6 +110,42 @@ const (
 	NodeSourceFile         NodeSource = "nodes_file"   // Loaded from external nodes file
 	NodeSourceSubscription NodeSource = "subscription" // Fetched from subscription URL
 )
+
+const (
+	InboundProtocolHTTP   = "http"
+	InboundProtocolSOCKS5 = "socks5"
+	InboundProtocolMixed  = "mixed"
+)
+
+// NormalizeInboundProtocol normalizes inbound protocol aliases and validates the value.
+func NormalizeInboundProtocol(value string) (string, error) {
+	protocol := strings.ToLower(strings.TrimSpace(value))
+	if protocol == "" {
+		return InboundProtocolMixed, nil
+	}
+	if protocol == "socks" {
+		protocol = InboundProtocolSOCKS5
+	}
+	switch protocol {
+	case InboundProtocolHTTP, InboundProtocolSOCKS5, InboundProtocolMixed:
+		return protocol, nil
+	default:
+		return "", fmt.Errorf("unsupported inbound protocol %q (use 'http', 'socks5', or 'mixed')", value)
+	}
+}
+
+func (c *Config) normalizeInboundProtocols() error {
+	var err error
+	c.Listener.Protocol, err = NormalizeInboundProtocol(c.Listener.Protocol)
+	if err != nil {
+		return fmt.Errorf("listener.protocol: %w", err)
+	}
+	c.MultiPort.Protocol, err = NormalizeInboundProtocol(c.MultiPort.Protocol)
+	if err != nil {
+		return fmt.Errorf("multi_port.protocol: %w", err)
+	}
+	return nil
+}
 
 // NodeConfig describes a single upstream proxy endpoint expressed as URI.
 type NodeConfig struct {
@@ -229,6 +267,9 @@ func (c *Config) normalize() error {
 	}
 	if c.MultiPort.BasePort == 0 {
 		c.MultiPort.BasePort = 24000
+	}
+	if err := c.normalizeInboundProtocols(); err != nil {
+		return err
 	}
 	if c.Management.Listen == "" {
 		c.Management.Listen = "127.0.0.1:9091"
@@ -442,6 +483,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	}
 	if c.MultiPort.BasePort == 0 {
 		c.MultiPort.BasePort = 24000
+	}
+	if err := c.normalizeInboundProtocols(); err != nil {
+		return err
 	}
 	if c.Management.Listen == "" {
 		c.Management.Listen = "127.0.0.1:9091"

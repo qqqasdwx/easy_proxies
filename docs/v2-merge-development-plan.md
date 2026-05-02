@@ -75,6 +75,8 @@ git merge --no-ff feat/v2-<stage-name>
 
 建议分支：`feat/v2-inbound-protocol`
 
+完成标记: done
+
 ### 目标
 
 合并 V2 的 `listener.protocol` 和 `multi_port.protocol`，支持 `http`、`socks5`、`mixed`。
