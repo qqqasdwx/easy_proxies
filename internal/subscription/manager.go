@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"easy_proxies/internal/boxmgr"
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
+	"easy_proxies/internal/store"
 )
 
 // Logger defines logging interface.
@@ -34,6 +34,11 @@ func WithLogger(l Logger) Option {
 	return func(m *Manager) { m.logger = l }
 }
 
+// WithStore enables SQLite-backed subscription status and source loading.
+func WithStore(s store.Store) Option {
+	return func(m *Manager) { m.store = s }
+}
+
 // Manager handles periodic subscription refresh.
 type Manager struct {
 	mu sync.RWMutex
@@ -41,6 +46,7 @@ type Manager struct {
 	baseCfg    *config.Config
 	boxMgr     *boxmgr.Manager
 	logger     Logger
+	store      store.Store
 	httpClient *http.Client // Custom HTTP client with connection pooling
 
 	status        monitor.SubscriptionStatus
@@ -48,10 +54,8 @@ type Manager struct {
 	cancel        context.CancelFunc
 	refreshMu     sync.Mutex // prevents concurrent refreshes
 	manualRefresh chan struct{}
-
-	// Track legacy nodes_file content hash to detect modifications when configured.
-	lastSubHash      string
-	lastNodesModTime time.Time
+	urls          []string
+	nodesHash     string
 }
 
 // New creates a SubscriptionManager.
@@ -93,6 +97,7 @@ func New(cfg *config.Config, boxMgr *boxmgr.Manager, opts ...Option) *Manager {
 	if m.logger == nil {
 		m.logger = defaultLogger{}
 	}
+	m.loadPersistedStatus()
 	return m
 }
 
@@ -102,7 +107,7 @@ func (m *Manager) Start() {
 		m.logger.Infof("subscription refresh disabled")
 		return
 	}
-	if len(m.baseCfg.Subscriptions) == 0 {
+	if len(m.subscriptionURLs()) == 0 {
 		m.logger.Infof("no subscriptions configured, refresh disabled")
 		return
 	}
@@ -128,16 +133,30 @@ func (m *Manager) Stop() {
 // UpdateConfig hot-reloads subscription URLs and refresh settings without restart.
 func (m *Manager) UpdateConfig(urls []string, enabled bool, interval time.Duration) {
 	m.mu.Lock()
-	m.baseCfg.Subscriptions = urls
+	m.urls = append(m.urls[:0], urls...)
 	m.baseCfg.SubscriptionRefresh.Enabled = enabled
 	if interval > 0 {
 		m.baseCfg.SubscriptionRefresh.Interval = interval
 	}
 	m.mu.Unlock()
 
-	// Persist to config.yaml
-	if err := m.baseCfg.SaveSettings(); err != nil {
-		m.logger.Errorf("failed to save subscription config: %v", err)
+	if m.store != nil {
+		sources := make([]store.SubscriptionSource, 0, len(urls))
+		for idx, u := range urls {
+			sources = append(sources, store.SubscriptionSource{
+				Name:       fmt.Sprintf("subscription-%d", idx+1),
+				URL:        u,
+				Enabled:    true,
+				AutoUpdate: enabled,
+				Interval:   interval,
+			})
+		}
+		if err := m.store.ReplaceSubscriptionSources(context.Background(), sources); err != nil {
+			m.logger.Errorf("failed to save subscription sources: %v", err)
+		}
+		if err := config.SaveRuntime(context.Background(), m.store, m.baseCfg); err != nil {
+			m.logger.Errorf("failed to save runtime config: %v", err)
+		}
 	}
 
 	// Restart the refresh loop with new settings
@@ -253,9 +272,6 @@ func (m *Manager) Status() monitor.SubscriptionStatus {
 	m.mu.RLock()
 	status := m.status
 	m.mu.RUnlock()
-
-	// Check if nodes have been modified since last refresh
-	status.NodesModified = m.CheckNodesModified()
 	return status
 }
 
@@ -312,13 +328,19 @@ func (m *Manager) doRefresh() {
 
 	m.mu.Lock()
 	m.status.IsRefreshing = true
+	status := m.status
+	hash := m.nodesHash
 	m.mu.Unlock()
+	m.persistStatus(context.Background(), status, hash)
 
 	defer func() {
 		m.mu.Lock()
 		m.status.IsRefreshing = false
 		m.status.RefreshCount++
+		status := m.status
+		hash := m.nodesHash
 		m.mu.Unlock()
+		m.persistStatus(context.Background(), status, hash)
 	}()
 
 	m.logger.Infof("starting subscription refresh")
@@ -349,34 +371,17 @@ func (m *Manager) doRefresh() {
 		nodes[idx].Source = config.NodeSourceSubscription
 	}
 
-	// Write subscription nodes only when a legacy nodes_file is explicitly configured.
-	nodesFilePath := m.getNodesFilePath()
-	if nodesFilePath != "" {
-		if err := m.writeNodesToFile(nodesFilePath, nodes); err != nil {
-			m.logger.Errorf("failed to write nodes file: %v", err)
-			m.mu.Lock()
-			m.status.LastError = fmt.Sprintf("write nodes file: %v", err)
-			m.status.LastRefresh = time.Now()
-			m.mu.Unlock()
-			return
-		}
-		m.logger.Infof("written %d nodes to %s", len(nodes), nodesFilePath)
-	}
-
-	// Update hash and mod time after writing
 	newHash := m.computeNodesHash(nodes)
-	m.mu.Lock()
-	m.lastSubHash = newHash
-	if nodesFilePath != "" {
-		if info, err := os.Stat(nodesFilePath); err == nil {
-			m.lastNodesModTime = info.ModTime()
-		} else {
-			m.lastNodesModTime = time.Now()
-		}
-	} else {
-		m.lastNodesModTime = time.Now()
+	if err := m.persistSubscriptionNodes(context.Background(), nodes); err != nil {
+		m.logger.Errorf("persist subscription nodes failed: %v", err)
+		m.mu.Lock()
+		m.status.LastError = err.Error()
+		m.status.LastRefresh = time.Now()
+		m.mu.Unlock()
+		return
 	}
-	m.status.NodesModified = false
+	m.mu.Lock()
+	m.nodesHash = newHash
 	m.mu.Unlock()
 
 	// Get current port mapping to preserve existing node ports
@@ -404,27 +409,6 @@ func (m *Manager) doRefresh() {
 	m.logger.Infof("subscription refresh completed, %d nodes active", len(nodes))
 }
 
-// getNodesFilePath returns the explicitly configured legacy nodes file path.
-func (m *Manager) getNodesFilePath() string {
-	if m.baseCfg.NodesFile != "" {
-		return m.baseCfg.NodesFile
-	}
-	return ""
-}
-
-// writeNodesToFile writes nodes to a file (one URI per line).
-func (m *Manager) writeNodesToFile(path string, nodes []config.NodeConfig) error {
-	var lines []string
-	for _, node := range nodes {
-		lines = append(lines, node.URI)
-	}
-	content := strings.Join(lines, "\n")
-	if len(lines) > 0 {
-		content += "\n"
-	}
-	return os.WriteFile(path, []byte(content), 0o644)
-}
-
 // computeNodesHash computes a hash of node URIs for change detection.
 func (m *Manager) computeNodesHash(nodes []config.NodeConfig) string {
 	var uris []string
@@ -436,65 +420,91 @@ func (m *Manager) computeNodesHash(nodes []config.NodeConfig) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// CheckNodesModified checks if the legacy nodes file has been modified since last refresh.
-// Uses file modification time as a fast path to avoid unnecessary file reads.
-func (m *Manager) CheckNodesModified() bool {
-	m.mu.RLock()
-	lastHash := m.lastSubHash
-	lastMod := m.lastNodesModTime
-	m.mu.RUnlock()
-
-	if lastHash == "" {
-		return false // No previous refresh, can't determine modification
+func (m *Manager) loadPersistedStatus() {
+	if m.store == nil {
+		return
 	}
-
-	nodesFilePath := m.getNodesFilePath()
-
-	// Fast path: check modification time first
-	info, err := os.Stat(nodesFilePath)
+	status, err := m.store.GetSubscriptionStatus(context.Background())
 	if err != nil {
-		return false // File doesn't exist or can't stat
+		m.logger.Warnf("failed to load subscription status: %v", err)
+		return
 	}
-	modTime := info.ModTime()
-	if !modTime.After(lastMod) {
-		return false // File hasn't been modified
-	}
-
-	// Slow path: file was modified, compute hash
-	data, err := os.ReadFile(nodesFilePath)
-	if err != nil {
-		return false // File doesn't exist or can't read
-	}
-
-	// Parse nodes from file content
-	var nodes []config.NodeConfig
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if config.IsProxyURI(line) {
-			nodes = append(nodes, config.NodeConfig{URI: line})
-		}
-	}
-
-	currentHash := m.computeNodesHash(nodes)
-	changed := currentHash != lastHash
-
-	// Update cached mod time
 	m.mu.Lock()
-	m.lastNodesModTime = modTime
+	m.status.LastRefresh = status.LastRefresh
+	m.status.NextRefresh = status.NextRefresh
+	m.status.NodeCount = status.NodeCount
+	m.status.LastError = status.LastError
+	m.status.RefreshCount = status.RefreshCount
+	m.status.IsRefreshing = status.IsRefreshing
+	m.nodesHash = status.NodesHash
 	m.mu.Unlock()
-
-	return changed
 }
 
-// MarkNodesModified updates the modification status.
-func (m *Manager) MarkNodesModified() {
-	m.mu.Lock()
-	m.status.NodesModified = true
-	m.mu.Unlock()
+func (m *Manager) persistStatus(ctx context.Context, status monitor.SubscriptionStatus, hash string) {
+	if m.store == nil {
+		return
+	}
+	if err := m.store.UpdateSubscriptionStatus(ctx, &store.SubscriptionStatus{
+		LastRefresh:  status.LastRefresh,
+		NextRefresh:  status.NextRefresh,
+		NodeCount:    status.NodeCount,
+		LastError:    status.LastError,
+		RefreshCount: status.RefreshCount,
+		IsRefreshing: status.IsRefreshing,
+		NodesHash:    hash,
+	}); err != nil {
+		m.logger.Warnf("failed to persist subscription status: %v", err)
+	}
+}
+
+func (m *Manager) persistSubscriptionNodes(ctx context.Context, nodes []config.NodeConfig) error {
+	if m.store == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return m.store.WithTx(ctx, func(tx store.Store) error {
+		existing, err := tx.ListNodes(ctx, store.NodeFilter{Source: store.NodeSourceSubscription})
+		if err != nil {
+			return fmt.Errorf("list subscription nodes: %w", err)
+		}
+		existingByURI := make(map[string]store.Node, len(existing))
+		for _, node := range existing {
+			existingByURI[node.URI] = node
+		}
+
+		nextURIs := make(map[string]struct{}, len(nodes))
+		upserts := make([]store.Node, 0, len(nodes))
+		for _, node := range nodes {
+			enabled := true
+			if old, ok := existingByURI[node.URI]; ok {
+				enabled = old.Enabled
+			}
+			nextURIs[node.URI] = struct{}{}
+			upserts = append(upserts, store.Node{
+				URI:      node.URI,
+				Name:     node.Name,
+				Source:   store.NodeSourceSubscription,
+				Port:     node.Port,
+				Username: node.Username,
+				Password: node.Password,
+				Enabled:  enabled,
+			})
+		}
+		for _, node := range existing {
+			if _, ok := nextURIs[node.URI]; ok {
+				continue
+			}
+			if err := tx.DeleteNode(ctx, node.ID); err != nil {
+				return fmt.Errorf("delete stale subscription node %q: %w", node.Name, err)
+			}
+		}
+		if err := tx.BulkUpsertNodes(ctx, upserts); err != nil {
+			return fmt.Errorf("upsert subscription nodes: %w", err)
+		}
+		return nil
+	})
 }
 
 // fetchAllSubscriptions fetches nodes from all configured subscription URLs.
@@ -507,7 +517,7 @@ func (m *Manager) fetchAllSubscriptions() ([]config.NodeConfig, error) {
 		timeout = 30 * time.Second
 	}
 
-	for _, subURL := range m.baseCfg.Subscriptions {
+	for _, subURL := range m.subscriptionURLs() {
 		nodes, err := m.fetchSubscription(subURL, timeout)
 		if err != nil {
 			m.logger.Warnf("failed to fetch %s: %v", subURL, err)
@@ -523,6 +533,27 @@ func (m *Manager) fetchAllSubscriptions() ([]config.NodeConfig, error) {
 	}
 
 	return allNodes, nil
+}
+
+func (m *Manager) subscriptionURLs() []string {
+	m.mu.RLock()
+	urls := append([]string(nil), m.urls...)
+	m.mu.RUnlock()
+	if m.store == nil {
+		return urls
+	}
+	sources, err := m.store.ListSubscriptionSources(context.Background())
+	if err != nil {
+		m.logger.Warnf("failed to load subscription sources: %v", err)
+		return urls
+	}
+	urls = urls[:0]
+	for _, source := range sources {
+		if source.Enabled && source.URL != "" {
+			urls = append(urls, source.URL)
+		}
+	}
+	return urls
 }
 
 // fetchSubscription fetches and parses a single subscription URL.

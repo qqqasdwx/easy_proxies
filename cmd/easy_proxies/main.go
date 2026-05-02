@@ -12,19 +12,27 @@ import (
 	"easy_proxies/internal/app"
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
+	"easy_proxies/internal/store"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 func main() {
-	var configPath string
-	flag.StringVar(&configPath, "config", "config.yaml", "path to config file")
+	var databasePath string
+	flag.StringVar(&databasePath, "database", "data/data.db", "path to SQLite database")
 	flag.Parse()
 
-	cfg, err := config.Load(configPath)
+	st, err := store.Open(databasePath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Fatalf("open database: %v", err)
 	}
+
+	cfg, err := config.RuntimeFromStore(context.Background(), st)
+	if err != nil {
+		_ = st.Close()
+		log.Fatalf("load runtime config: %v", err)
+	}
+	cfg.DatabasePath = databasePath
 
 	// Setup logging based on config
 	setupLogging(cfg)
@@ -32,7 +40,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := app.Run(ctx, cfg); err != nil {
+	if err := app.RunWithStore(ctx, cfg, st); err != nil {
 		fmt.Fprintf(os.Stderr, "proxy pool exited with error: %v\n", err)
 		os.Exit(1)
 	}

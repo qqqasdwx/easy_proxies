@@ -25,13 +25,23 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			log.Printf("⚠️  SQLite store disabled: %v", err)
 		} else {
 			dataStore = st
-			defer dataStore.Close()
-			if err := syncStoreFromConfig(ctx, cfg, dataStore); err != nil {
-				log.Printf("⚠️  Failed to sync nodes to store: %v", err)
-			}
-			if err := applyStoreNodeState(ctx, cfg, dataStore); err != nil {
-				log.Printf("⚠️  Failed to apply store node state: %v", err)
-			}
+		}
+	}
+	return RunWithStore(ctx, cfg, dataStore)
+}
+
+// RunWithStore builds the runtime components from an already-open SQLite store.
+func RunWithStore(ctx context.Context, cfg *config.Config, dataStore store.Store) error {
+	if dataStore != nil {
+		defer dataStore.Close()
+		if cfgFromStore, err := config.RuntimeFromStore(ctx, dataStore); err != nil {
+			log.Printf("⚠️  Failed to load runtime settings from store: %v", err)
+		} else {
+			cfgFromStore.DatabasePath = cfg.DatabasePath
+			cfg = cfgFromStore
+		}
+		if err := applyStoreNodeState(ctx, cfg, dataStore); err != nil {
+			log.Printf("⚠️  Failed to apply store node state: %v", err)
 		}
 	}
 
@@ -76,12 +86,20 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 
 	// Always create SubscriptionManager so WebUI can hot-reload subscription config
-	subMgr := subscription.New(cfg, boxMgr)
+	var subOpts []subscription.Option
+	if dataStore != nil {
+		subOpts = append(subOpts, subscription.WithStore(dataStore))
+	}
+	subMgr := subscription.New(cfg, boxMgr, subOpts...)
 	defer subMgr.Stop()
 
-	// Start refresh loop only if subscriptions are already configured
-	if cfg.SubscriptionRefresh.Enabled && len(cfg.Subscriptions) > 0 {
-		subMgr.Start()
+	if cfg.SubscriptionRefresh.Enabled {
+		configured, err := hasActiveSubscriptionSources(ctx, dataStore)
+		if err != nil {
+			log.Printf("⚠️  Failed to inspect subscription sources: %v", err)
+		} else if configured {
+			subMgr.Start()
+		}
 	}
 
 	// Wire up subscription manager to monitor server for API endpoints
@@ -131,48 +149,6 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
-func syncStoreFromConfig(ctx context.Context, cfg *config.Config, s store.Store) error {
-	if cfg == nil || s == nil {
-		return nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	existing, err := s.ListNodes(ctx, store.NodeFilter{})
-	if err != nil {
-		return fmt.Errorf("list store nodes: %w", err)
-	}
-	byURI := make(map[string]store.Node, len(existing))
-	for _, node := range existing {
-		byURI[node.URI] = node
-	}
-
-	var upserts []store.Node
-	for _, node := range cfg.Nodes {
-		source := string(node.Source)
-		if source == "" {
-			source = store.NodeSourceInline
-		}
-		enabled := true
-		if existingNode, ok := byURI[node.URI]; ok {
-			enabled = existingNode.Enabled
-		}
-		upserts = append(upserts, store.Node{
-			URI:      node.URI,
-			Name:     node.Name,
-			Source:   source,
-			Port:     node.Port,
-			Username: node.Username,
-			Password: node.Password,
-			Region:   "",
-			Country:  "",
-			Enabled:  enabled,
-		})
-	}
-	return s.BulkUpsertNodes(ctx, upserts)
-}
-
 func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store) error {
 	if cfg == nil || s == nil {
 		return nil
@@ -217,6 +193,25 @@ func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store)
 	}
 	cfg.Nodes = filtered
 	return nil
+}
+
+func hasActiveSubscriptionSources(ctx context.Context, s store.Store) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sources, err := s.ListSubscriptionSources(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, source := range sources {
+		if source.Enabled && source.URL != "" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func periodicStatsFlush(ctx context.Context, boxMgr *boxmgr.Manager) {

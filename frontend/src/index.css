@@ -3,6 +3,32 @@
   themes: all;
 }
 
+@layer components {
+  select.select {
+    background-color: var(--color-base-100) !important;
+    color: var(--color-base-content);
+    border-color: var(--color-base-300);
+    box-shadow: 0 1px 2px color-mix(in oklab, var(--color-base-content) 10%, transparent);
+  }
+
+  select.select:focus,
+  select.select:focus-within {
+    background-color: var(--color-base-100) !important;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-primary) 18%, transparent);
+  }
+
+  select.select option,
+  select.select optgroup {
+    background-color: var(--color-base-100);
+    color: var(--color-base-content);
+  }
+
+  .dropdown-content {
+    background-color: var(--color-base-100) !important;
+  }
+}
+
 /* Custom Scrollbar Styles */
 @layer utilities {
   /* For Chrome, Edge, and Safari */

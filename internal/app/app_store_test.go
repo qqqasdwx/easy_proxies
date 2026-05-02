@@ -23,22 +23,19 @@ func TestApplyStoreNodeStateFiltersDisabledNodes(t *testing.T) {
 
 	cfg := &config.Config{
 		Nodes: []config.NodeConfig{
-			{Name: "enabled", URI: "http://user:pass@enabled.example.com:8080", Source: config.NodeSourceFile},
-			{Name: "disabled", URI: "http://user:pass@disabled.example.com:8080", Source: config.NodeSourceFile},
+			{Name: "enabled", URI: "http://user:pass@enabled.example.com:8080", Source: config.NodeSourceManual},
+			{Name: "disabled", URI: "http://user:pass@disabled.example.com:8080", Source: config.NodeSourceManual},
 		},
 	}
 	if err := st.CreateNode(ctx, &store.Node{
 		URI:     cfg.Nodes[1].URI,
 		Name:    cfg.Nodes[1].Name,
-		Source:  store.NodeSourceFile,
+		Source:  store.NodeSourceManual,
 		Enabled: false,
 	}); err != nil {
 		t.Fatalf("create disabled store node: %v", err)
 	}
 
-	if err := syncStoreFromConfig(ctx, cfg, st); err != nil {
-		t.Fatalf("sync store from config: %v", err)
-	}
 	if err := applyStoreNodeState(ctx, cfg, st); err != nil {
 		t.Fatalf("apply store node state: %v", err)
 	}

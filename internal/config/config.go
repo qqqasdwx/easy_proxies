@@ -1,20 +1,20 @@
 package config
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"easy_proxies/internal/store"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,14 +30,10 @@ type Config struct {
 	GeoIP               GeoIPConfig               `yaml:"geoip"`
 	Log                 LogConfig                 `yaml:"log"`
 	Nodes               []NodeConfig              `yaml:"nodes"`
-	NodesFile           string                    `yaml:"nodes_file"`    // 节点文件路径，每行一个 URI
-	Subscriptions       []string                  `yaml:"subscriptions"` // 订阅链接列表
 	DatabasePath        string                    `yaml:"database_path"` // SQLite 数据库路径，默认 data/data.db
 	ExternalIP          string                    `yaml:"external_ip"`   // 外部 IP 地址，用于导出时替换 0.0.0.0
 	LogLevel            string                    `yaml:"log_level"`
 	SkipCertVerify      bool                      `yaml:"skip_cert_verify"` // 全局跳过 SSL 证书验证
-
-	filePath string `yaml:"-"` // 配置文件路径，用于保存
 }
 
 // LogConfig controls log output and rotation.
@@ -107,8 +103,6 @@ type SubscriptionRefreshConfig struct {
 type NodeSource string
 
 const (
-	NodeSourceInline       NodeSource = "inline"       // Defined directly in config.yaml nodes array
-	NodeSourceFile         NodeSource = "nodes_file"   // Loaded from external nodes file
 	NodeSourceSubscription NodeSource = "subscription" // Fetched from subscription URL
 	NodeSourceManual       NodeSource = "manual"       // Managed through WebUI/API and persisted in SQLite
 )
@@ -123,6 +117,8 @@ const (
 	EnvManagementPort     = "MANAGEMENT_PORT"
 	EnvManagementPassword = "MANAGEMENT_PASSWORD"
 )
+
+const runtimeConfigSettingKey = "runtime_config"
 
 // NormalizeInboundProtocol normalizes inbound protocol aliases and validates the value.
 func NormalizeInboundProtocol(value string) (string, error) {
@@ -158,9 +154,58 @@ func (c *Config) normalizeDatabasePath() {
 	if c.DatabasePath == "" {
 		c.DatabasePath = "data/data.db"
 	}
-	if c.filePath != "" && !filepath.IsAbs(c.DatabasePath) {
-		c.DatabasePath = filepath.Join(filepath.Dir(c.filePath), c.DatabasePath)
+}
+
+// Default returns the built-in runtime defaults without reading config files.
+func Default() (*Config, error) {
+	var cfg Config
+	if err := cfg.NormalizeWithPortMap(nil); err != nil {
+		return nil, err
 	}
+	return &cfg, nil
+}
+
+// RuntimeFromStore loads runtime settings from SQLite and applies defaults plus env overrides.
+func RuntimeFromStore(ctx context.Context, st store.Store) (*Config, error) {
+	cfg, err := Default()
+	if err != nil {
+		return nil, err
+	}
+	if st == nil {
+		return cfg, nil
+	}
+	raw, ok, err := st.GetAppSetting(ctx, runtimeConfigSettingKey)
+	if err != nil {
+		return nil, err
+	}
+	if ok && strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), cfg); err != nil {
+			return nil, fmt.Errorf("decode runtime config from database: %w", err)
+		}
+	}
+	cfg.Nodes = nil
+	if err := cfg.NormalizeWithPortMap(nil); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// SaveRuntime persists runtime settings to SQLite. Management.Password is intentionally omitted.
+func SaveRuntime(ctx context.Context, st store.Store, cfg *Config) error {
+	if st == nil {
+		return errors.New("store is nil")
+	}
+	if cfg == nil {
+		return errors.New("config is nil")
+	}
+	saveCfg := *cfg
+	saveCfg.Nodes = nil
+	saveCfg.Management.Password = ""
+	data, err := json.Marshal(&saveCfg)
+	if err != nil {
+		return fmt.Errorf("encode runtime config: %w", err)
+	}
+	return st.SetAppSetting(ctx, runtimeConfigSettingKey, string(data))
 }
 
 // NodeConfig describes a single upstream proxy endpoint expressed as URI.
@@ -178,37 +223,6 @@ type NodeConfig struct {
 // This is used to preserve port assignments across reloads.
 func (n *NodeConfig) NodeKey() string {
 	return n.URI
-}
-
-// Load reads YAML config from disk and applies defaults/validation.
-func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			var cfg Config
-			if err := cfg.normalize(); err != nil {
-				return nil, err
-			}
-			return &cfg, nil
-		}
-		return nil, fmt.Errorf("read config: %w", err)
-	}
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("decode config: %w", err)
-	}
-	cfg.filePath = path
-
-	// Resolve nodes_file path relative to config file directory
-	if cfg.NodesFile != "" && !filepath.IsAbs(cfg.NodesFile) {
-		configDir := filepath.Dir(path)
-		cfg.NodesFile = filepath.Join(configDir, cfg.NodesFile)
-	}
-
-	if err := cfg.normalize(); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
 }
 
 // ExtractNodeName extracts a human-readable name from a proxy URI.
@@ -256,204 +270,6 @@ func ExtractNodeName(uri string) string {
 	}
 
 	return ""
-}
-
-func (c *Config) normalize() error {
-	if c.Mode == "" {
-		c.Mode = "pool"
-	}
-	// Normalize mode name: support both multi-port and multi_port
-	if c.Mode == "multi_port" {
-		c.Mode = "multi-port"
-	}
-	switch c.Mode {
-	case "pool", "multi-port", "hybrid":
-	default:
-		return fmt.Errorf("unsupported mode %q (use 'pool', 'multi-port', or 'hybrid')", c.Mode)
-	}
-	if c.Listener.Address == "" {
-		c.Listener.Address = "0.0.0.0"
-	}
-	if c.Listener.Port == 0 {
-		c.Listener.Port = 2323
-	}
-	if c.Pool.Mode == "" {
-		c.Pool.Mode = "sequential"
-	}
-	if c.Pool.FailureThreshold <= 0 {
-		c.Pool.FailureThreshold = 3
-	}
-	if c.Pool.BlacklistDuration <= 0 {
-		c.Pool.BlacklistDuration = 24 * time.Hour
-	}
-	if c.MultiPort.Address == "" {
-		c.MultiPort.Address = "0.0.0.0"
-	}
-	if c.MultiPort.BasePort == 0 {
-		c.MultiPort.BasePort = 24000
-	}
-	if err := c.normalizeInboundProtocols(); err != nil {
-		return err
-	}
-	if c.Management.Listen == "" {
-		c.Management.Listen = "0.0.0.0:9091"
-	}
-	if c.Management.ProbeTarget == "" {
-		c.Management.ProbeTarget = "www.apple.com:80"
-	}
-	if c.Management.Enabled == nil {
-		defaultEnabled := true
-		c.Management.Enabled = &defaultEnabled
-	}
-	c.normalizeDatabasePath()
-
-	// Subscription refresh defaults
-	if c.SubscriptionRefresh.Interval <= 0 {
-		c.SubscriptionRefresh.Interval = 1 * time.Hour
-	}
-	if c.SubscriptionRefresh.Timeout <= 0 {
-		c.SubscriptionRefresh.Timeout = 30 * time.Second
-	}
-	if c.SubscriptionRefresh.HealthCheckTimeout <= 0 {
-		c.SubscriptionRefresh.HealthCheckTimeout = 60 * time.Second
-	}
-	if c.SubscriptionRefresh.DrainTimeout <= 0 {
-		c.SubscriptionRefresh.DrainTimeout = 30 * time.Second
-	}
-	if c.SubscriptionRefresh.MinAvailableNodes <= 0 {
-		c.SubscriptionRefresh.MinAvailableNodes = 1
-	}
-
-	// Mark inline nodes with source
-	for idx := range c.Nodes {
-		c.Nodes[idx].Source = NodeSourceInline
-	}
-
-	// Load nodes from file if specified (but NOT if subscriptions exist - subscription takes priority)
-	if c.NodesFile != "" && len(c.Subscriptions) == 0 {
-		fileNodes, err := loadNodesFromFile(c.NodesFile)
-		if err != nil {
-			return fmt.Errorf("load nodes from file %q: %w", c.NodesFile, err)
-		}
-		for idx := range fileNodes {
-			fileNodes[idx].Source = NodeSourceFile
-		}
-		c.Nodes = append(c.Nodes, fileNodes...)
-	}
-
-	// Load nodes from subscriptions.
-	if len(c.Subscriptions) > 0 {
-		var subNodes []NodeConfig
-		subTimeout := c.SubscriptionRefresh.Timeout
-		for _, subURL := range c.Subscriptions {
-			nodes, err := loadNodesFromSubscription(subURL, subTimeout)
-			if err != nil {
-				log.Printf("⚠️ Failed to load subscription %q: %v (skipping)", subURL, err)
-				continue
-			}
-			log.Printf("✅ Loaded %d nodes from subscription", len(nodes))
-			subNodes = append(subNodes, nodes...)
-		}
-		// Mark subscription nodes and optionally write them to an explicitly configured nodes file.
-		for idx := range subNodes {
-			subNodes[idx].Source = NodeSourceSubscription
-		}
-		if len(subNodes) > 0 && c.NodesFile != "" {
-			if err := writeNodesToFile(c.NodesFile, subNodes); err != nil {
-				log.Printf("⚠️ Failed to write nodes to %q: %v", c.NodesFile, err)
-			} else {
-				log.Printf("✅ Written %d subscription nodes to %s", len(subNodes), c.NodesFile)
-			}
-		}
-		c.Nodes = append(c.Nodes, subNodes...)
-		// Fallback: if all subscriptions failed, try loading the explicitly configured cache file.
-		if len(subNodes) == 0 && c.NodesFile != "" {
-			cachedNodes, err := loadNodesFromFile(c.NodesFile)
-			if err == nil && len(cachedNodes) > 0 {
-				log.Printf("⚠️  All subscriptions failed, using %d cached nodes from %s", len(cachedNodes), c.NodesFile)
-				c.Nodes = append(c.Nodes, cachedNodes...)
-			}
-		}
-	}
-
-	portCursor := c.MultiPort.BasePort
-	for idx := range c.Nodes {
-		c.Nodes[idx].Name = strings.TrimSpace(c.Nodes[idx].Name)
-		c.Nodes[idx].URI = strings.TrimSpace(c.Nodes[idx].URI)
-
-		if c.Nodes[idx].URI == "" {
-			return fmt.Errorf("node %d is missing uri", idx)
-		}
-
-		// Auto-extract name from URI if not provided
-		if c.Nodes[idx].Name == "" {
-			c.Nodes[idx].Name = ExtractNodeName(c.Nodes[idx].URI)
-		}
-		// Fallback to default name if still empty
-		if c.Nodes[idx].Name == "" {
-			c.Nodes[idx].Name = fmt.Sprintf("node-%d", idx)
-		}
-
-		// Auto-assign port in multi-port/hybrid mode, skip occupied ports
-		if c.Nodes[idx].Port == 0 && (c.Mode == "multi-port" || c.Mode == "hybrid") {
-			for !IsPortAvailable(c.MultiPort.Address, portCursor) {
-				log.Printf("⚠️  Port %d is in use, trying next port", portCursor)
-				portCursor++
-				if portCursor > 65535 {
-					return fmt.Errorf("no available ports found starting from %d", c.MultiPort.BasePort)
-				}
-			}
-			c.Nodes[idx].Port = portCursor
-			portCursor++
-		} else if c.Nodes[idx].Port == 0 {
-			c.Nodes[idx].Port = portCursor
-			portCursor++
-		}
-
-		if c.Mode == "multi-port" || c.Mode == "hybrid" {
-			if c.Nodes[idx].Username == "" {
-				c.Nodes[idx].Username = c.MultiPort.Username
-				c.Nodes[idx].Password = c.MultiPort.Password
-			}
-		}
-	}
-	if c.LogLevel == "" {
-		c.LogLevel = "info"
-	}
-
-	// Log config defaults
-	c.normalizeLogConfig()
-
-	// Auto-fix port conflicts in hybrid mode (pool port vs multi-port)
-	if c.Mode == "hybrid" {
-		poolPort := c.Listener.Port
-		usedPorts := make(map[uint16]bool)
-		usedPorts[poolPort] = true
-		for idx := range c.Nodes {
-			usedPorts[c.Nodes[idx].Port] = true
-		}
-		for idx := range c.Nodes {
-			if c.Nodes[idx].Port == poolPort {
-				// Find next available port
-				newPort := c.Nodes[idx].Port + 1
-				for usedPorts[newPort] || !IsPortAvailable(c.MultiPort.Address, newPort) {
-					newPort++
-					if newPort > 65535 {
-						return fmt.Errorf("no available port for node %q after conflict with pool port %d", c.Nodes[idx].Name, poolPort)
-					}
-				}
-				log.Printf("⚠️  Node %q port %d conflicts with pool port, reassigned to %d", c.Nodes[idx].Name, poolPort, newPort)
-				usedPorts[newPort] = true
-				c.Nodes[idx].Port = newPort
-			}
-		}
-	}
-
-	if err := c.applyEnvironmentOverrides(); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // BuildPortMap creates a mapping from node URI to port for existing nodes.
@@ -616,10 +432,6 @@ func (c *Config) normalizeLogConfig() {
 	if c.Log.File == "" {
 		c.Log.File = "logs/easy_proxies.log"
 	}
-	// Resolve relative log file path against config dir
-	if c.filePath != "" && !filepath.IsAbs(c.Log.File) {
-		c.Log.File = filepath.Join(filepath.Dir(c.filePath), c.Log.File)
-	}
 	if c.Log.MaxSize <= 0 {
 		c.Log.MaxSize = 50
 	}
@@ -673,58 +485,6 @@ func (c *Config) ManagementEnabled() bool {
 		return true
 	}
 	return *c.Management.Enabled
-}
-
-// loadNodesFromFile reads a nodes file where each line is a proxy URI
-// Lines starting with # are comments, empty lines are ignored
-func loadNodesFromFile(path string) ([]NodeConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return parseNodesFromContent(string(data))
-}
-
-// loadNodesFromSubscription fetches and parses nodes from a subscription URL
-// Supports multiple formats: base64 encoded, plain text, clash yaml, etc.
-func loadNodesFromSubscription(subURL string, timeout time.Duration) ([]NodeConfig, error) {
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	client := &http.Client{
-		Timeout: timeout,
-	}
-
-	req, err := http.NewRequest("GET", subURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	// Use clash-compatible User-Agent to get Clash YAML format from subscription servers
-	// This ensures we receive structured YAML with all proxy types (AnyTLS, TUIC, etc.)
-	// instead of base64-encoded content that may only contain basic SS nodes
-	req.Header.Set("User-Agent", "clash-verge/v2.2.3")
-	req.Header.Set("Accept", "*/*")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch subscription: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("subscription returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	content := string(body)
-
-	// Try to detect and parse different formats
-	return parseSubscriptionContent(content)
 }
 
 // parseSubscriptionContent tries to parse subscription content in various formats (optimized)
@@ -1175,160 +935,6 @@ func buildTUICURI(p clashProxy) string {
 	return fmt.Sprintf("tuic://%s:%s@%s:%d%s#%s", p.UUID, p.Password, p.Server, int(p.Port), query, url.QueryEscape(p.Name))
 }
 
-// FilePath returns the config file path.
-func (c *Config) FilePath() string {
-	if c == nil {
-		return ""
-	}
-	return c.filePath
-}
-
-// SetFilePath sets the config file path (used when creating config programmatically).
-func (c *Config) SetFilePath(path string) {
-	if c != nil {
-		c.filePath = path
-	}
-}
-
-// writeNodesToFile writes nodes to a file (one URI per line) with file locking.
-func writeNodesToFile(path string, nodes []NodeConfig) error {
-	var lines []string
-	for _, node := range nodes {
-		lines = append(lines, node.URI)
-	}
-	content := strings.Join(lines, "\n")
-	if len(lines) > 0 {
-		content += "\n"
-	}
-	// Use file locking for safe concurrent writes
-	return writeFileWithLock(path, []byte(content), 0o644)
-}
-
-// SaveNodes persists nodes to their appropriate locations based on source.
-// - subscription/nodes_file nodes → nodes.txt (or configured nodes_file)
-// - inline nodes → config.yaml nodes array
-// Config.yaml structure (subscriptions, nodes_file) is preserved.
-func (c *Config) SaveNodes() error {
-	if c == nil {
-		return errors.New("config is nil")
-	}
-	if c.filePath == "" {
-		return nil
-	}
-
-	// Separate nodes by source
-	var inlineNodes []NodeConfig
-	var fileNodes []NodeConfig
-
-	for _, node := range c.Nodes {
-		// Create a clean copy without runtime fields for saving
-		cleanNode := NodeConfig{
-			Name:     node.Name,
-			URI:      node.URI,
-			Port:     node.Port,
-			Username: node.Username,
-			Password: node.Password,
-		}
-		switch node.Source {
-		case NodeSourceInline:
-			inlineNodes = append(inlineNodes, cleanNode)
-		case NodeSourceFile, NodeSourceSubscription:
-			fileNodes = append(fileNodes, cleanNode)
-		default:
-			// Default to file nodes for unknown source
-			fileNodes = append(fileNodes, cleanNode)
-		}
-	}
-
-	// Write file-based nodes to nodes.txt
-	if len(fileNodes) > 0 || c.NodesFile != "" {
-		nodesFilePath := c.NodesFile
-		if nodesFilePath == "" {
-			nodesFilePath = filepath.Join(filepath.Dir(c.filePath), "nodes.txt")
-		}
-		if err := writeNodesToFile(nodesFilePath, fileNodes); err != nil {
-			return fmt.Errorf("write nodes file %q: %w", nodesFilePath, err)
-		}
-	}
-
-	// Update config.yaml nodes array (including clearing it when all inline nodes are deleted)
-	{
-		// Read original config to preserve structure
-		data, err := os.ReadFile(c.filePath)
-		if err != nil {
-			return fmt.Errorf("read config: %w", err)
-		}
-		var saveCfg Config
-		if err := yaml.Unmarshal(data, &saveCfg); err != nil {
-			return fmt.Errorf("decode config: %w", err)
-		}
-		// Update only the inline nodes
-		saveCfg.Nodes = inlineNodes
-
-		newData, err := yaml.Marshal(&saveCfg)
-		if err != nil {
-			return fmt.Errorf("encode config: %w", err)
-		}
-		// Use file locking for safe concurrent writes
-		if err := writeFileWithLock(c.filePath, newData, 0o644); err != nil {
-			return fmt.Errorf("write config: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// Save is deprecated, use SaveNodes instead.
-// This method is kept for backward compatibility but now delegates to SaveNodes.
-func (c *Config) Save() error {
-	return c.SaveNodes()
-}
-
-// SaveSettings persists only config settings (external_ip, probe_target, skip_cert_verify)
-// without touching nodes.txt. Use this for settings API updates.
-func (c *Config) SaveSettings() error {
-	if c == nil {
-		return errors.New("config is nil")
-	}
-	if c.filePath == "" {
-		return nil
-	}
-
-	data, err := os.ReadFile(c.filePath)
-	if err != nil {
-		return fmt.Errorf("read config: %w", err)
-	}
-	var saveCfg Config
-	if err := yaml.Unmarshal(data, &saveCfg); err != nil {
-		return fmt.Errorf("decode config: %w", err)
-	}
-
-	saveCfg.ExternalIP = c.ExternalIP
-	saveCfg.Management.ProbeTarget = c.Management.ProbeTarget
-	saveCfg.SkipCertVerify = c.SkipCertVerify
-	saveCfg.Log = c.Log
-	saveCfg.Subscriptions = c.Subscriptions
-	saveCfg.DatabasePath = c.DatabasePath
-	saveCfg.SubscriptionRefresh = c.SubscriptionRefresh
-	saveCfg.GeoIP = c.GeoIP
-	saveCfg.Mode = c.Mode
-	saveCfg.Listener = c.Listener
-	saveCfg.MultiPort = c.MultiPort
-	saveCfg.Pool = c.Pool
-	saveCfg.Management = c.Management
-
-	newData, err := yaml.Marshal(&saveCfg)
-	if err != nil {
-		return fmt.Errorf("encode config: %w", err)
-	}
-
-	// Use file locking for safe concurrent writes
-	if err := writeFileWithLock(c.filePath, newData, 0o644); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-	return nil
-}
-
 // IsPortAvailable checks if a port is available for binding.
 func IsPortAvailable(address string, port uint16) bool {
 	addr := fmt.Sprintf("%s:%d", address, port)
@@ -1338,31 +944,4 @@ func IsPortAvailable(address string, port uint16) bool {
 	}
 	_ = ln.Close()
 	return true
-}
-
-// writeFileWithLock writes data to a file with exclusive locking.
-func writeFileWithLock(path string, data []byte, perm os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return fmt.Errorf("open file: %w", err)
-	}
-	defer f.Close()
-
-	// Acquire exclusive lock
-	if err := lockFile(f); err != nil {
-		return fmt.Errorf("lock file: %w", err)
-	}
-	defer unlockFile(f)
-
-	// Write data
-	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("write file: %w", err)
-	}
-
-	// Ensure data is written to disk
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("sync file: %w", err)
-	}
-
-	return nil
 }

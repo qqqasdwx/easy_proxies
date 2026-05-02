@@ -106,6 +106,22 @@ type Store interface {
 	// UpdateSubscriptionStatus creates or updates the subscription status.
 	UpdateSubscriptionStatus(ctx context.Context, status *SubscriptionStatus) error
 
+	// --- App settings ---
+
+	// GetAppSetting returns a persisted application setting value.
+	GetAppSetting(ctx context.Context, key string) (string, bool, error)
+
+	// SetAppSetting creates or updates a persisted application setting value.
+	SetAppSetting(ctx context.Context, key string, value string) error
+
+	// --- Subscription sources ---
+
+	// ListSubscriptionSources returns all configured subscription sources.
+	ListSubscriptionSources(ctx context.Context) ([]SubscriptionSource, error)
+
+	// ReplaceSubscriptionSources atomically replaces the configured subscription sources.
+	ReplaceSubscriptionSources(ctx context.Context, sources []SubscriptionSource) error
+
 	// --- Lifecycle ---
 
 	// Close releases all resources held by the store.
@@ -123,7 +139,7 @@ type Node struct {
 	ID        int64     `json:"id"`
 	URI       string    `json:"uri"`
 	Name      string    `json:"name"`
-	Source    string    `json:"source"` // inline, nodes_file, subscription, manual
+	Source    string    `json:"source"` // manual or subscription
 	Port      uint16    `json:"port"`
 	Username  string    `json:"username,omitempty"`
 	Password  string    `json:"password,omitempty"`
@@ -207,10 +223,24 @@ type SubscriptionStatus struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// SubscriptionSource represents a subscription URL and its refresh policy.
+type SubscriptionSource struct {
+	ID          int64         `json:"id"`
+	Name        string        `json:"name"`
+	URL         string        `json:"url"`
+	Enabled     bool          `json:"enabled"`
+	AutoUpdate  bool          `json:"auto_update"`
+	Interval    time.Duration `json:"interval"`
+	LastRefresh time.Time     `json:"last_refresh"`
+	NextRefresh time.Time     `json:"next_refresh"`
+	NodeCount   int           `json:"node_count"`
+	LastError   string        `json:"last_error"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+}
+
 // Node source constants (matching config.NodeSource values).
 const (
-	NodeSourceInline       = "inline"
-	NodeSourceFile         = "nodes_file"
 	NodeSourceSubscription = "subscription"
 	NodeSourceManual       = "manual"
 )
