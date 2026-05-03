@@ -10,7 +10,7 @@
 - **Wide protocol support**: VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5, HTTP/HTTPS
 - **Automatic health checking** with configurable failure thresholds and blacklist duration, plus manual blacklist/release from the dashboard
 - **GeoIP region routing**: classify nodes by country and route traffic through a specific region via a dedicated HTTP proxy endpoint
-- **Multiple node sources**: WebUI/SQLite nodes, inline config, legacy `nodes.txt` file, or subscription URLs (Base64, plain text, Clash YAML)
+- **Database-backed node sources**: manual WebUI/API nodes and multiple subscription sources (Base64, plain text, Clash YAML) coexist in SQLite
 - **Subscription auto-refresh with hot-reload**: periodically fetches subscription updates and reloads without restart
 - **WebUI dashboard**: real-time node status, traffic charts, diagnostics, log console, and full settings management
 - **Management API**: RESTful endpoints for node CRUD, probing, blacklisting, subscription management, and config reload
@@ -30,14 +30,13 @@ docker compose up -d
 The default container starts without `config.yaml` or `nodes.txt` and listens only on the management WebUI/API port.
 
 ```bash
-MANAGEMENT_PORT=19091 docker compose up -d
-MANAGEMENT_PASSWORD='change-me' docker compose up -d
+MANAGEMENT_PORT=19091 MANAGEMENT_PASSWORD='change-me' docker compose up -d
 ```
 
 ### 2. Run from Source
 
 ```bash
-go run ./cmd/easy_proxies
+go run ./cmd/easy_proxies --database data/data.db
 ```
 
 ### 3. Access WebUI
@@ -66,42 +65,15 @@ Open `http://localhost:9091` in your browser.
 
 `listener.protocol` controls the pool entrypoint and `multi_port.protocol` controls per-node entrypoints. Supported values are `mixed` (default, HTTP + SOCKS5), `http`, and `socks5`.
 
-### Minimal Config Example
+### Runtime State
 
-```yaml
-mode: pool
-database_path: data/data.db
+Easy Proxies no longer reads or writes `config.yaml` or `nodes.txt`. Built-in defaults are loaded first, then runtime settings, nodes, subscriptions, sessions, disabled flags, ports, and traffic statistics are restored from SQLite.
 
-listener:
-  address: 0.0.0.0
-  port: 2323
-  protocol: mixed        # mixed / http / socks5
-  username: user
-  password: pass
+Use `--database data/data.db` for local development. In Docker, mount `./data:/app/data` to persist `/app/data/data.db` across restarts.
 
-pool:
-  mode: sequential    # sequential / random / balance
-  failure_threshold: 3
-  blacklist_duration: 24h
+`MANAGEMENT_PORT` overrides the management WebUI/API port at process start. `MANAGEMENT_PASSWORD` enables login and is read only from the environment; it is not a database or WebUI setting.
 
-management:
-  enabled: true
-  listen: 0.0.0.0:9091
-  probe_target: http://cp.cloudflare.com/generate_204
-
-dns:
-  server: 223.5.5.5
-  port: 53
-  strategy: prefer_ipv4
-
-nodes_file: nodes.txt
-```
-
-### Full Config Reference
-
-See [config.example.yaml](config.example.yaml) for the full documented configuration with all available options.
-
-`database_path` points to the SQLite store. It persists WebUI-managed nodes, disabled flags, sessions, and traffic statistics. `config.yaml` and `nodes.txt` remain supported for legacy file-based deployments. See [SQLite Store Migration Guide](docs/sqlite-migration.md).
+See [SQLite Runtime Store](docs/sqlite-migration.md) for persistence and backup notes.
 
 ## GeoIP Region Routing
 
@@ -252,33 +224,13 @@ resp, err := client.Get("http://example.com")
 
 ## Node Sources
 
-### Inline Nodes
+### Manual Nodes
 
-```yaml
-nodes:
-  - uri: "vless://uuid@server:443?security=tls&type=ws&path=/path#Name"
-```
-
-### Nodes File
-
-```yaml
-nodes_file: nodes.txt
-```
-
-One proxy URI per line. Lines starting with `#` are comments.
+Add nodes from the WebUI or `POST /api/nodes/config`. The editor accepts URI import, structured sing-box outbound JSON, and per-node inbound settings. Manual nodes are editable and persist in SQLite.
 
 ### Subscriptions
 
-```yaml
-subscriptions:
-  - "https://provider.example/api?token=xxx"
-
-subscription_refresh:
-  enabled: true
-  interval: 1h
-```
-
-Supports Base64, plain text, and Clash YAML formats. By default, fetched nodes are applied to runtime state and persisted in SQLite; `nodes_file` is written only when explicitly configured. Subscription changes trigger automatic hot-reload without restart.
+Manage subscriptions from the WebUI subscription page or `/api/subscriptions`. Each subscription has its own enabled flag, auto-update flag, interval, refresh status, and node count. Subscription nodes appear in node management, can be enabled/disabled, but are read-only for edits. Subscription refresh hot-reloads sing-box without restart.
 
 ## WebUI Dashboard
 
@@ -287,12 +239,13 @@ Access at `http://your-server:9091` (configurable via the `management` section).
 Features:
 
 - **React dashboard**: Real-time node status, traffic charts, region availability, latency monitoring
-- **Node Config**: Add/edit/delete/import nodes, batch enable/disable, and subscription URLs
+- **Node Config**: Add/edit/delete/import manual nodes, view read-only subscription nodes, and batch enable/disable
+- **Subscriptions**: Manage multiple subscription sources, auto-update, manual refresh, and refresh status
 - **Diagnostics**: Connectivity testing and node state export
 - **Console**: Application logs from the in-memory ring buffer (last 1000 lines)
 - **Settings**: Runtime options are editable from the browser; node state persists in SQLite
 
-Set `MANAGEMENT_PASSWORD` to require login. The management password is never read from or written to config files.
+Set `MANAGEMENT_PASSWORD` to require login. The management password is never stored in SQLite, logged, or returned by the settings API.
 
 ## Management API
 
@@ -308,10 +261,12 @@ Set `MANAGEMENT_PASSWORD` to require login. The management password is never rea
 | `/api/nodes/traffic/stream` | GET | Stream aggregated traffic stats (SSE) |
 | `/api/export` | GET | Export node configuration |
 | `/api/import` | POST | Import proxy URI lines |
-| `/api/subscription/config` | GET, PUT | Manage subscription URLs |
-| `/api/subscription/status` | GET | Check subscription status |
-| `/api/subscription/refresh` | POST | Trigger manual refresh |
-| `/api/nodes/config` | GET, POST, PUT, DELETE | CRUD for node config |
+| `/api/subscriptions` | GET, POST | List/create subscription sources |
+| `/api/subscriptions/{id}` | PUT, DELETE | Update/delete one subscription source |
+| `/api/subscriptions/{id}/refresh` | POST | Refresh one subscription source |
+| `/api/subscription/status` | GET | Check aggregate subscription status |
+| `/api/nodes/config` | GET, POST | List/create node config |
+| `/api/nodes/config/{name}` | PUT, DELETE, PATCH | Update/delete/toggle one node |
 | `/api/nodes/config/batch-toggle` | POST | Batch enable/disable nodes |
 | `/api/nodes/config/batch-delete` | POST | Batch delete nodes |
 | `/api/logs` | GET | Read recent application logs |

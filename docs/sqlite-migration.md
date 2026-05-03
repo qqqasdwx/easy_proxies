@@ -1,14 +1,13 @@
-# SQLite Store Migration Guide
+# SQLite Runtime Store
 
-Easy Proxies uses a SQLite store at `database_path` (default `data/data.db`) to persist WebUI-managed nodes, disabled flags, sessions, and runtime statistics. Existing `config.yaml` and `nodes.txt` workflows continue to work as legacy file mode.
+Easy Proxies uses SQLite as the only persistence source. The default local database is `data/data.db`; the Docker image stores it at `/app/data/data.db`. The app no longer reads, writes, or migrates `config.yaml` or `nodes.txt`.
 
-## What Changes
+## What Is Persisted
 
-- A new deployment can start without `config.yaml` or `nodes.txt`.
-- With no nodes configured, only the management WebUI/API listener starts.
-- `nodes.txt` remains supported only when `nodes_file` is explicitly configured.
-- SQLite restores WebUI nodes on startup and preserves disabled nodes and traffic totals.
-- If the database cannot be opened, the app logs a warning and continues in file-compatible mode.
+- Runtime settings: mode, pool scheduling, listener, multi-port, log, GeoIP, subscription refresh, and probe target.
+- Nodes: manual nodes and subscription nodes, including source, outbound JSON, inbound protocol, local port, disabled state, and subscription ownership.
+- Subscriptions: name, URL, enabled flag, auto-update flag, interval, refresh timestamps, node count, and last error.
+- Sessions and runtime data: login sessions, traffic counters, node stats, blacklist state, and timeline data.
 
 ## Docker Volumes
 
@@ -26,34 +25,28 @@ Create them before first start:
 mkdir -p logs data
 ```
 
-## Upgrade From File Mode
+## Local Development
 
-1. Add or keep this setting in `config.yaml`:
+Use the default database path:
 
-   ```yaml
-   database_path: data/data.db
-   ```
+```bash
+go run ./cmd/easy_proxies --database data/data.db
+```
 
-2. Start normally:
-
-   ```bash
-   docker compose up -d
-   ```
-
-3. On first startup, nodes from `config.yaml` / `nodes.txt` are upserted into SQLite. Existing node URIs are used as the stable identity, so repeated starts do not duplicate nodes.
-
-4. Use the WebUI node management page for add/edit/disable/delete. After those actions, reload from the WebUI when prompted.
+Use `--database /path/to/data.db` only when you intentionally want a separate runtime store.
 
 ## Management Password
 
-Set `MANAGEMENT_PASSWORD` to require WebUI/API login. The password is read only from the process environment and is never written to `config.yaml` or returned by the settings API.
+Set `MANAGEMENT_PASSWORD` to require WebUI/API login. The password is read only from the process environment and is never written to SQLite, shown in the WebUI, logged, or returned by the settings API.
 
-## Rollback
+`MANAGEMENT_PORT` overrides the management WebUI/API port at process start. It is an environment override, not a persisted setting.
 
-Stop the service and remove or change `database_path` if you need pure file mode. Keep `config.yaml` and `nodes.txt` if you still use them; do not delete `data/` unless you intentionally want to discard WebUI state and runtime statistics.
+## Backup and Reset
+
+Back up `data/` before upgrades. To reset a disposable development instance, stop the service and remove `data/data.db`; the next start will recreate it from built-in defaults.
 
 ## Notes
 
 - Do not commit `data/`, `*.db`, `*.db-shm`, or `*.db-wal`.
-- Back up `data/` before major upgrades; include `config.yaml` and `nodes.txt` only if you still use legacy file mode.
 - Disabled nodes are stored in SQLite and are not selected during sing-box config generation.
+- Subscription nodes are read-only in node management; update them by refreshing or editing their subscription source.
