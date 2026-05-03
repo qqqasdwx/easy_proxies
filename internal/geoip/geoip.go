@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +54,16 @@ type Lookup struct {
 	updateOnce     sync.Once
 	dnsCache       map[string]RegionInfo
 	cacheMu        sync.RWMutex
+	resolver       *dnsResolver
+}
+
+// ResolverConfig controls the resolver used for GeoIP hostname lookups.
+type ResolverConfig struct {
+	Enabled         bool
+	Server          string
+	FallbackServers []string
+	Port            uint16
+	Strategy        string
 }
 
 // EnsureDatabase checks if the GeoIP database exists, and downloads it if not
@@ -254,8 +265,18 @@ func New(dbPath string) (*Lookup, error) {
 	return NewWithAutoUpdate(dbPath, 0)
 }
 
+// NewWithResolver creates a new GeoIP lookup instance with a custom DNS resolver.
+func NewWithResolver(dbPath string, resolver ResolverConfig) (*Lookup, error) {
+	return NewWithAutoUpdateAndResolver(dbPath, 0, resolver)
+}
+
 // NewWithAutoUpdate creates a new GeoIP lookup instance with auto-update support
 func NewWithAutoUpdate(dbPath string, updateInterval time.Duration) (*Lookup, error) {
+	return NewWithAutoUpdateAndResolver(dbPath, updateInterval, ResolverConfig{})
+}
+
+// NewWithAutoUpdateAndResolver creates a GeoIP lookup with auto-update and DNS resolver support.
+func NewWithAutoUpdateAndResolver(dbPath string, updateInterval time.Duration, resolver ResolverConfig) (*Lookup, error) {
 	if dbPath == "" {
 		return &Lookup{}, nil
 	}
@@ -276,6 +297,7 @@ func NewWithAutoUpdate(dbPath string, updateInterval time.Duration) (*Lookup, er
 		updateInterval: updateInterval,
 		stopChan:       make(chan struct{}),
 		dnsCache:       make(map[string]RegionInfo),
+		resolver:       newDNSResolver(resolver),
 	}
 
 	// Start auto-update goroutine if interval is set
@@ -495,10 +517,9 @@ func (l *Lookup) LookupURI(uri string) RegionInfo {
 	ip := net.ParseIP(host)
 	if ip == nil {
 		// It's a hostname, try to resolve with timeout
-		resolver := &net.Resolver{}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		ips, err := resolver.LookupIPAddr(ctx, host)
+		ips, err := l.lookupIPAddr(ctx, host)
 		if err != nil || len(ips) == 0 {
 			result := RegionInfo{Code: RegionOther, Country: "Unknown", ISOCode: ""}
 			// Cache failed lookups too to avoid repeated timeouts
@@ -518,6 +539,125 @@ func (l *Lookup) LookupURI(uri string) RegionInfo {
 	l.cacheMu.Unlock()
 
 	return result
+}
+
+func (l *Lookup) lookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	if l.resolver != nil {
+		return l.resolver.LookupIPAddr(ctx, host)
+	}
+	return new(net.Resolver).LookupIPAddr(ctx, host)
+}
+
+type dnsResolver struct {
+	servers  []string
+	port     uint16
+	strategy string
+}
+
+func newDNSResolver(cfg ResolverConfig) *dnsResolver {
+	if !cfg.Enabled {
+		return nil
+	}
+	port := cfg.Port
+	if port == 0 {
+		port = 53
+	}
+	servers := make([]string, 0, 1+len(cfg.FallbackServers))
+	seen := make(map[string]bool)
+	addServer := func(server string) {
+		server = strings.TrimSpace(server)
+		if server == "" || seen[server] {
+			return
+		}
+		seen[server] = true
+		servers = append(servers, server)
+	}
+	addServer(cfg.Server)
+	for _, server := range cfg.FallbackServers {
+		addServer(server)
+	}
+	if len(servers) == 0 {
+		return nil
+	}
+	return &dnsResolver{
+		servers:  servers,
+		port:     port,
+		strategy: normalizeResolverStrategy(cfg.Strategy),
+	}
+}
+
+func (r *dnsResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	var lastErr error
+	for _, server := range r.servers {
+		serverAddr := dnsServerAddress(server, r.port)
+		resolver := &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				dialer := net.Dialer{}
+				return dialer.DialContext(ctx, "udp", serverAddr)
+			},
+		}
+		ips, err := resolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		ips = selectIPAddrsByStrategy(ips, r.strategy)
+		if len(ips) > 0 {
+			return ips, nil
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no DNS results for %s", host)
+}
+
+func dnsServerAddress(server string, port uint16) string {
+	server = strings.TrimSpace(server)
+	if parsed, err := url.Parse(server); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		server = parsed.Host
+	}
+	if _, _, err := net.SplitHostPort(server); err == nil {
+		return server
+	}
+	return net.JoinHostPort(server, strconv.Itoa(int(port)))
+}
+
+func normalizeResolverStrategy(strategy string) string {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "as_is", "prefer_ipv4", "prefer_ipv6", "ipv4_only", "ipv6_only":
+		return strings.ToLower(strings.TrimSpace(strategy))
+	default:
+		return "prefer_ipv4"
+	}
+}
+
+func selectIPAddrsByStrategy(ips []net.IPAddr, strategy string) []net.IPAddr {
+	ipv4 := make([]net.IPAddr, 0, len(ips))
+	ipv6 := make([]net.IPAddr, 0, len(ips))
+	for _, ip := range ips {
+		if ip.IP.To4() != nil {
+			ipv4 = append(ipv4, ip)
+			continue
+		}
+		if ip.IP.To16() != nil {
+			ipv6 = append(ipv6, ip)
+		}
+	}
+
+	switch normalizeResolverStrategy(strategy) {
+	case "ipv4_only":
+		return ipv4
+	case "ipv6_only":
+		return ipv6
+	case "prefer_ipv6":
+		return append(ipv6, ipv4...)
+	case "as_is":
+		return ips
+	default:
+		return append(ipv4, ipv6...)
+	}
 }
 
 // extractHostFromURI extracts the host/IP from various proxy URI formats

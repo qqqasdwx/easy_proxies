@@ -222,3 +222,54 @@ func TestBuildSkipsDisabledNodes(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildIncludesDNSOptions(t *testing.T) {
+	cfg := &config.Config{
+		Mode: "pool",
+		Listener: config.ListenerConfig{
+			Address:  "127.0.0.1",
+			Port:     2323,
+			Protocol: config.InboundProtocolMixed,
+		},
+		Pool: config.PoolConfig{
+			Mode:              "sequential",
+			FailureThreshold:  3,
+			BlacklistDuration: time.Hour,
+		},
+		DNS: config.DNSConfig{
+			Enabled:         true,
+			Server:          "9.9.9.9",
+			FallbackServers: []string{"1.1.1.1", "8.8.8.8"},
+			Port:            5353,
+			Strategy:        config.DNSStrategyPreferIPv6,
+		},
+		Nodes: []config.NodeConfig{{
+			Name: "node-1",
+			URI:  "http://user:pass@example.com:8080",
+		}},
+	}
+
+	opts, err := Build(cfg)
+	if err != nil {
+		t.Fatalf("build options: %v", err)
+	}
+	if opts.DNS == nil {
+		t.Fatal("DNS options were not generated")
+	}
+	if opts.DNS.Final != "dns-primary" {
+		t.Fatalf("DNS final = %q, want dns-primary", opts.DNS.Final)
+	}
+	if len(opts.DNS.Servers) != 3 {
+		t.Fatalf("DNS server count = %d, want 3", len(opts.DNS.Servers))
+	}
+	if opts.DNS.Strategy != option.DomainStrategy(C.DomainStrategyPreferIPv6) {
+		t.Fatalf("DNS strategy = %v, want prefer_ipv6", opts.DNS.Strategy)
+	}
+	primary, ok := opts.DNS.Servers[0].Options.(*option.RemoteDNSServerOptions)
+	if !ok {
+		t.Fatalf("primary DNS options type = %T", opts.DNS.Servers[0].Options)
+	}
+	if primary.Server != "9.9.9.9" || primary.ServerPort != 5353 {
+		t.Fatalf("primary DNS server = %s:%d, want 9.9.9.9:5353", primary.Server, primary.ServerPort)
+	}
+}

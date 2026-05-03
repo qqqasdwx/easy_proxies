@@ -39,15 +39,16 @@ func Build(cfg *config.Config) (option.Options, error) {
 	var geoLookup *geoip.Lookup
 	if cfg.GeoIP.Enabled && cfg.GeoIP.DatabasePath != "" {
 		var err error
+		resolverConfig := geoIPResolverConfig(cfg.DNS)
 		// Use auto-update if enabled
 		if cfg.GeoIP.AutoUpdateEnabled {
 			interval := cfg.GeoIP.AutoUpdateInterval
 			if interval == 0 {
 				interval = 24 * time.Hour // Default to 24 hours
 			}
-			geoLookup, err = geoip.NewWithAutoUpdate(cfg.GeoIP.DatabasePath, interval)
+			geoLookup, err = geoip.NewWithAutoUpdateAndResolver(cfg.GeoIP.DatabasePath, interval, resolverConfig)
 		} else {
-			geoLookup, err = geoip.New(cfg.GeoIP.DatabasePath)
+			geoLookup, err = geoip.NewWithResolver(cfg.GeoIP.DatabasePath, resolverConfig)
 		}
 		if err != nil {
 			log.Printf("⚠️  GeoIP database load failed: %v (region routing disabled)", err)
@@ -369,7 +370,85 @@ func Build(cfg *config.Config) (option.Options, error) {
 			},
 		},
 	}
+	if dnsOptions := buildDNSOptions(cfg.DNS); dnsOptions != nil {
+		opts.DNS = dnsOptions
+	}
 	return opts, nil
+}
+
+func buildDNSOptions(cfg config.DNSConfig) *option.DNSOptions {
+	if !cfg.Enabled {
+		return nil
+	}
+
+	strategy := buildDNSDomainStrategy(cfg.Strategy)
+	servers := make([]option.DNSServerOptions, 0, 1+len(cfg.FallbackServers))
+	added := make(map[string]bool)
+
+	addServer := func(tag, server string) {
+		server = strings.TrimSpace(server)
+		if server == "" || added[server] {
+			return
+		}
+		added[server] = true
+		servers = append(servers, option.DNSServerOptions{
+			Type: C.DNSTypeUDP,
+			Tag:  tag,
+			Options: &option.RemoteDNSServerOptions{
+				DNSServerAddressOptions: option.DNSServerAddressOptions{
+					Server:     server,
+					ServerPort: cfg.Port,
+				},
+			},
+		})
+	}
+
+	addServer("dns-primary", cfg.Server)
+	for idx, server := range cfg.FallbackServers {
+		addServer(fmt.Sprintf("dns-fallback-%d", idx+1), server)
+	}
+	if len(servers) == 0 {
+		return nil
+	}
+
+	return &option.DNSOptions{
+		RawDNSOptions: option.RawDNSOptions{
+			Servers: servers,
+			Final:   servers[0].Tag,
+			DNSClientOptions: option.DNSClientOptions{
+				Strategy: strategy,
+			},
+		},
+	}
+}
+
+func buildDNSDomainStrategy(value string) option.DomainStrategy {
+	normalized, err := config.NormalizeDNSStrategy(value)
+	if err != nil {
+		normalized = config.DNSStrategyPreferIPv4
+	}
+	switch normalized {
+	case config.DNSStrategyAsIs:
+		return option.DomainStrategy(C.DomainStrategyAsIS)
+	case config.DNSStrategyPreferIPv6:
+		return option.DomainStrategy(C.DomainStrategyPreferIPv6)
+	case config.DNSStrategyIPv4Only:
+		return option.DomainStrategy(C.DomainStrategyIPv4Only)
+	case config.DNSStrategyIPv6Only:
+		return option.DomainStrategy(C.DomainStrategyIPv6Only)
+	default:
+		return option.DomainStrategy(C.DomainStrategyPreferIPv4)
+	}
+}
+
+func geoIPResolverConfig(cfg config.DNSConfig) geoip.ResolverConfig {
+	return geoip.ResolverConfig{
+		Enabled:         cfg.Enabled,
+		Server:          cfg.Server,
+		FallbackServers: cfg.FallbackServers,
+		Port:            cfg.Port,
+		Strategy:        cfg.Strategy,
+	}
 }
 
 func buildPoolInbound(cfg *config.Config) (option.Inbound, error) {

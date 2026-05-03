@@ -183,6 +183,15 @@ export default function SettingsPanel() {
     if (Number.isNaN(date.getTime())) return value
     return date.toLocaleString()
   }
+  const updateFallbackServers = (value: string) => {
+    updateField(
+      'dns_fallback_servers',
+      value
+        .split(/[\n,]+/)
+        .map(item => item.trim())
+        .filter(Boolean)
+    )
+  }
 
   return (
     <div className="flex flex-col min-h-full animate-in fade-in duration-500">
@@ -336,6 +345,85 @@ export default function SettingsPanel() {
               onChange={(e) => updateField('skip_cert_verify', e.target.checked)}
             />
           </label>
+        </div>
+
+        {/* ===== DNS ===== */}
+        <div className="rounded-2xl border border-base-300/50 bg-base-100 p-6 lg:p-8 space-y-5 shadow-sm transition-shadow hover:shadow-md">
+          <div className="flex items-center gap-3 mb-2 border-b border-base-200 pb-4">
+            <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center text-accent shrink-0">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 21a9 9 0 100-18 9 9 0 000 18z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3.6 9h16.8M3.6 15h16.8M11.5 3a14.8 14.8 0 000 18M12.5 3a14.8 14.8 0 010 18" />
+              </svg>
+            </div>
+            <div>
+              <h3 className="font-bold text-lg text-base-content">DNS 解析</h3>
+              <p className="text-xs text-base-content/50 font-medium">sing-box 与 GeoIP 域名解析</p>
+            </div>
+          </div>
+
+          <label className="flex items-center justify-between cursor-pointer gap-4 bg-base-200/30 p-4 rounded-xl border border-base-200 hover:border-base-300 transition-colors">
+            <span className="font-semibold text-base-content/90">启用自定义 DNS</span>
+            <input
+              type="checkbox"
+              className="toggle toggle-primary toggle-md"
+              checked={settings.dns_enabled}
+              onChange={(e) => updateField('dns_enabled', e.target.checked)}
+            />
+          </label>
+
+          {settings.dns_enabled && (
+            <div className="space-y-4 pt-2 animate-in fade-in slide-in-from-top-2">
+              <div className="grid grid-cols-3 gap-4">
+                <fieldset className="fieldset col-span-2">
+                  <legend className="fieldset-legend font-semibold text-base-content/80">主 DNS 服务器</legend>
+                  <input
+                    type="text"
+                    className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
+                    placeholder="223.5.5.5"
+                    value={settings.dns_server}
+                    onChange={(e) => updateField('dns_server', e.target.value)}
+                  />
+                </fieldset>
+                <fieldset className="fieldset">
+                  <legend className="fieldset-legend font-semibold text-base-content/80">端口</legend>
+                  <input
+                    type="number"
+                    className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
+                    value={settings.dns_port}
+                    onChange={(e) => updateField('dns_port', parseInt(e.target.value) || 53)}
+                    min={1}
+                    max={65535}
+                  />
+                </fieldset>
+              </div>
+
+              <fieldset className="fieldset">
+                <legend className="fieldset-legend font-semibold text-base-content/80">IP 策略</legend>
+                <select
+                  className="select select-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
+                  value={settings.dns_strategy}
+                  onChange={(e) => updateField('dns_strategy', e.target.value)}
+                >
+                  <option value="as_is">as_is</option>
+                  <option value="prefer_ipv4">prefer_ipv4</option>
+                  <option value="prefer_ipv6">prefer_ipv6</option>
+                  <option value="ipv4_only">ipv4_only</option>
+                  <option value="ipv6_only">ipv6_only</option>
+                </select>
+              </fieldset>
+
+              <fieldset className="fieldset">
+                <legend className="fieldset-legend font-semibold text-base-content/80">备用 DNS 服务器</legend>
+                <textarea
+                  className="textarea textarea-md w-full min-h-24 bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50 font-mono text-sm"
+                  placeholder="8.8.8.8&#10;1.1.1.1"
+                  value={settings.dns_fallback_servers.join('\n')}
+                  onChange={(e) => updateFallbackServers(e.target.value)}
+                />
+              </fieldset>
+            </div>
+          )}
         </div>
 
         {/* ===== Pool 监听与调度 ===== */}
