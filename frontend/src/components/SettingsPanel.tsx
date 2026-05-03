@@ -347,6 +347,90 @@ export default function SettingsPanel() {
           </label>
         </div>
 
+        {/* ===== 日志 ===== */}
+        <div className="rounded-2xl border border-base-300/50 bg-base-100 p-6 lg:p-8 space-y-5 shadow-sm transition-shadow hover:shadow-md">
+          <div className="flex items-center gap-3 mb-2 border-b border-base-200 pb-4">
+            <div className="w-10 h-10 rounded-xl bg-warning/10 flex items-center justify-center text-warning shrink-0">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7h16M4 12h16M4 17h10" />
+              </svg>
+            </div>
+            <div>
+              <h3 className="font-bold text-lg text-base-content">日志输出</h3>
+              <p className="text-xs text-base-content/50 font-medium">运行日志与文件轮转</p>
+            </div>
+          </div>
+
+          <fieldset className="fieldset">
+            <legend className="fieldset-legend font-semibold text-base-content/80">输出方式</legend>
+            <select
+              className="select select-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
+              value={settings.log_output}
+              onChange={(e) => updateField('log_output', e.target.value)}
+            >
+              <option value="stdout">stdout</option>
+              <option value="file">file</option>
+            </select>
+          </fieldset>
+
+          {settings.log_output === 'file' && (
+            <div className="space-y-4 pt-2 animate-in fade-in slide-in-from-top-2">
+              <fieldset className="fieldset">
+                <legend className="fieldset-legend font-semibold text-base-content/80">日志文件</legend>
+                <input
+                  type="text"
+                  className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
+                  value={settings.log_file}
+                  onChange={(e) => updateField('log_file', e.target.value)}
+                />
+              </fieldset>
+
+              <div className="grid grid-cols-3 gap-4">
+                <fieldset className="fieldset">
+                  <legend className="fieldset-legend font-semibold text-base-content/80">最大大小 MB</legend>
+                  <input
+                    type="number"
+                    className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
+                    value={settings.log_max_size}
+                    onChange={(e) => updateField('log_max_size', parseInt(e.target.value) || 1)}
+                    min={1}
+                  />
+                </fieldset>
+                <fieldset className="fieldset">
+                  <legend className="fieldset-legend font-semibold text-base-content/80">保留文件数</legend>
+                  <input
+                    type="number"
+                    className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
+                    value={settings.log_max_backups}
+                    onChange={(e) => updateField('log_max_backups', parseInt(e.target.value) || 1)}
+                    min={1}
+                  />
+                </fieldset>
+                <fieldset className="fieldset">
+                  <legend className="fieldset-legend font-semibold text-base-content/80">保留天数</legend>
+                  <input
+                    type="number"
+                    className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
+                    value={settings.log_max_age}
+                    onChange={(e) => updateField('log_max_age', parseInt(e.target.value) || 1)}
+                    min={1}
+                  />
+                </fieldset>
+              </div>
+
+              <label className="flex items-center justify-between cursor-pointer gap-4 bg-base-200/30 p-4 rounded-xl border border-base-200 hover:border-base-300 transition-colors">
+                <span className="font-semibold text-base-content/90">压缩旧日志</span>
+                <input
+                  type="checkbox"
+                  className="toggle toggle-primary toggle-md"
+                  checked={settings.log_compress}
+                  onChange={(e) => updateField('log_compress', e.target.checked)}
+                />
+              </label>
+            </div>
+          )}
+        </div>
+
         {/* ===== DNS ===== */}
         <div className="rounded-2xl border border-base-300/50 bg-base-100 p-6 lg:p-8 space-y-5 shadow-sm transition-shadow hover:shadow-md">
           <div className="flex items-center gap-3 mb-2 border-b border-base-200 pb-4">

@@ -22,6 +22,7 @@ import (
 
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/geoip"
+	"easy_proxies/internal/logging"
 	"easy_proxies/internal/store"
 	"golang.org/x/sync/semaphore"
 )
@@ -1278,6 +1279,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusBadRequest)
 				writeJSON(w, map[string]any{"error": err.Error()})
 				return
+			}
+			if req.Log != nil {
+				if err := logging.Configure(s.cfgSrc.Log, LogWriter()); err != nil {
+					s.cfgMu.Unlock()
+					w.WriteHeader(http.StatusBadRequest)
+					writeJSON(w, map[string]any{"error": fmt.Sprintf("应用日志配置失败: %v", err)})
+					return
+				}
 			}
 			if s.store != nil {
 				if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {
