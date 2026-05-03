@@ -13,6 +13,7 @@ import (
 	mathrand "math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -954,6 +955,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			},
 			"geoip": map[string]any{
 				"enabled":              false,
+				"database_path":        config.DefaultGeoIPDatabasePath(),
+				"database_updated_at":  "",
 				"listen":               "",
 				"port":                 0,
 				"auto_update_enabled":  false,
@@ -989,6 +992,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			resp["geoip"] = map[string]any{
 				"enabled":              cfg.GeoIP.Enabled,
+				"database_path":        cfg.GeoIP.DatabasePath,
+				"database_updated_at":  geoIPDatabaseUpdatedAt(cfg.GeoIP.DatabasePath),
 				"listen":               cfg.GeoIP.Listen,
 				"port":                 cfg.GeoIP.Port,
 				"auto_update_enabled":  cfg.GeoIP.AutoUpdateEnabled,
@@ -1784,10 +1789,19 @@ func (s *Server) handleGeoIPRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]any{
-		"message":     "GeoIP 数据库已重新下载",
-		"path":        dbPath,
-		"need_reload": geoIPEnabled,
+		"message":             "GeoIP 数据库已重新下载",
+		"path":                dbPath,
+		"database_updated_at": geoIPDatabaseUpdatedAt(dbPath),
+		"need_reload":         geoIPEnabled,
 	})
+}
+
+func geoIPDatabaseUpdatedAt(path string) string {
+	info, err := os.Stat(strings.TrimSpace(path))
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	return info.ModTime().Format(time.RFC3339)
 }
 
 // handleReload triggers a configuration reload.

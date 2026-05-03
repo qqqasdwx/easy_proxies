@@ -30,6 +30,8 @@ const defaultSettings: SettingsData = {
   management_health_check_interval: '2h0m0s',
 
   geoip_enabled: false,
+  geoip_database_path: '',
+  geoip_database_updated_at: '',
   geoip_auto_update_enabled: false,
   geoip_auto_update_interval: '24h0m0s',
 
@@ -108,6 +110,11 @@ export default function SettingsPanel() {
     setSuccess('')
     try {
       const res = await refreshGeoIPDatabase()
+      setSettings(s => ({
+        ...s,
+        geoip_database_path: res.path || s.geoip_database_path,
+        geoip_database_updated_at: res.database_updated_at || s.geoip_database_updated_at,
+      }))
       setSuccess(res.message || 'GeoIP 数据库已重新下载')
       if (res.need_reload) setNeedReload(true)
     } catch (err) {
@@ -147,6 +154,12 @@ export default function SettingsPanel() {
 
   const showPoolConfig = settings.mode === 'pool' || settings.mode === 'hybrid'
   const showMultiPortConfig = settings.mode === 'multi-port' || settings.mode === 'hybrid'
+  const formatGeoIPUpdatedAt = (value: string) => {
+    if (!value) return '未下载'
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return value
+    return date.toLocaleString()
+  }
 
   return (
     <div className="flex flex-col min-h-full animate-in fade-in duration-500">
@@ -559,7 +572,7 @@ export default function SettingsPanel() {
 
         {/* ===== GeoIP ===== */}
         <div className="rounded-2xl border border-base-300/50 bg-base-100 p-6 lg:p-8 space-y-5 shadow-sm transition-shadow hover:shadow-md">
-          <div className="flex items-center justify-between gap-3 mb-2 border-b border-base-200 pb-4">
+          <div className="flex items-center gap-3 mb-2 border-b border-base-200 pb-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-info/10 flex items-center justify-center text-info shrink-0">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -571,19 +584,6 @@ export default function SettingsPanel() {
                 <p className="text-xs text-base-content/50 font-medium">节点地域解析与自动更新</p>
               </div>
             </div>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm btn-square"
-              onClick={handleRefreshGeoIP}
-              disabled={refreshingGeoIP}
-              title="重新下载 GeoIP 数据库"
-            >
-              {refreshingGeoIP ? <span className="loading loading-spinner loading-xs"></span> : (
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-              )}
-            </button>
           </div>
 
           <label className="flex items-center justify-between cursor-pointer gap-4 bg-base-200/30 p-4 rounded-xl border border-base-200 hover:border-base-300 transition-colors">
@@ -601,8 +601,32 @@ export default function SettingsPanel() {
 
           {settings.geoip_enabled && (
             <div className="space-y-4 pt-2 animate-in fade-in slide-in-from-top-2">
-              <div className="rounded-xl bg-base-200/40 border border-base-200 px-4 py-3 text-sm text-base-content/60">
-                GeoIP 数据库由系统管理：Docker 中存放在 <span className="font-mono">/app/data</span>，本地运行时存放在同级 <span className="font-mono">data</span> 目录。
+              <div className="rounded-xl bg-base-200/40 border border-base-200 px-4 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-2">
+                    <div>
+                      <div className="text-xs font-semibold text-base-content/50 mb-1">数据库文件</div>
+                      <div className="font-mono text-sm text-base-content/80 break-all">{settings.geoip_database_path || '-'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold text-base-content/50 mb-1">最近更新时间</div>
+                      <div className="text-sm text-base-content/70">{formatGeoIPUpdatedAt(settings.geoip_database_updated_at)}</div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm btn-square shrink-0"
+                    onClick={handleRefreshGeoIP}
+                    disabled={refreshingGeoIP}
+                    title="重新下载 GeoIP 数据库"
+                  >
+                    {refreshingGeoIP ? <span className="loading loading-spinner loading-xs"></span> : (
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
               </div>
 
               <label className="flex items-center justify-between cursor-pointer gap-4 bg-base-200/30 p-4 rounded-xl border border-base-200 hover:border-base-300 transition-colors">

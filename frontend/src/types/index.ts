@@ -114,6 +114,8 @@ export interface SettingsData {
 
   // GeoIP
   geoip_enabled: boolean
+  geoip_database_path: string
+  geoip_database_updated_at: string
   geoip_auto_update_enabled: boolean
   geoip_auto_update_interval: string
 

@@ -123,6 +123,8 @@ interface RawSettings {
   }
   geoip?: {
     enabled?: boolean
+    database_path?: string
+    database_updated_at?: string
     auto_update_enabled?: boolean
     auto_update_interval?: string
   }
@@ -369,7 +371,7 @@ export async function updateSettings(settings: SettingsData): Promise<SettingsUp
   }
 }
 
-export async function refreshGeoIPDatabase(): Promise<{ message: string; path?: string; need_reload?: boolean }> {
+export async function refreshGeoIPDatabase(): Promise<{ message: string; path?: string; database_updated_at?: string; need_reload?: boolean }> {
   return request('/api/geoip/refresh', { method: 'POST' })
 }
 
@@ -402,6 +404,8 @@ function normalizeSettings(raw: RawSettings): SettingsData {
     management_health_check_interval: '5m0s',
 
     geoip_enabled: raw.geoip?.enabled || false,
+    geoip_database_path: raw.geoip?.database_path || '',
+    geoip_database_updated_at: raw.geoip?.database_updated_at || '',
     geoip_auto_update_enabled: raw.geoip?.auto_update_enabled ?? false,
     geoip_auto_update_interval: raw.geoip?.auto_update_interval || '24h0m0s',
 
