@@ -1,6 +1,6 @@
 services:
   easy_proxies:
-    image: ghcr.io/jasonwong1991/easy_proxies:latest
+    image: ghcr.io/qqqasdwx/easy_proxies:latest
     container_name: easy_proxies
     restart: unless-stopped
     environment:

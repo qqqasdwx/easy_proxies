@@ -178,7 +178,7 @@ docker build -t easy_proxies:dev .
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=jasonwong1991/easy_proxies&type=Date)](https://star-history.com/#jasonwong1991/easy_proxies&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=qqqasdwx/easy_proxies&type=Date)](https://star-history.com/#qqqasdwx/easy_proxies&Date)
 
 ## 许可证
 

@@ -282,7 +282,7 @@ The default setup exposes only the management port and persists SQLite/log data:
 ```yaml
 services:
   easy_proxies:
-    image: ghcr.io/jasonwong1991/easy_proxies:latest
+    image: ghcr.io/qqqasdwx/easy_proxies:latest
     container_name: easy_proxies
     restart: unless-stopped
     environment:
@@ -326,7 +326,7 @@ docker build -t easy_proxies:dev .
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=jasonwong1991/easy_proxies&type=Date)](https://star-history.com/#jasonwong1991/easy_proxies&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=qqqasdwx/easy_proxies&type=Date)](https://star-history.com/#qqqasdwx/easy_proxies&Date)
 
 ## License
 
