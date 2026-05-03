@@ -49,11 +49,6 @@ const defaultSettings: SettingsData = {
   geoip_auto_update_enabled: false,
   geoip_auto_update_interval: '24h0m0s',
 
-  subscription_refresh_timeout: '30s',
-  subscription_refresh_health_check_timeout: '60s',
-  subscription_refresh_drain_timeout: '30s',
-  subscription_refresh_min_available_nodes: 1,
-
   health_check_interval: '5m0s',
   health_check_timeout: '10s',
   health_check_concurrency: 8,

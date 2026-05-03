@@ -135,12 +135,6 @@ export interface SettingsData {
   geoip_auto_update_enabled: boolean
   geoip_auto_update_interval: string
 
-  // Subscription refresh advanced
-  subscription_refresh_timeout: string
-  subscription_refresh_health_check_timeout: string
-  subscription_refresh_drain_timeout: string
-  subscription_refresh_min_available_nodes: number
-
   // Health check
   health_check_interval: string
   health_check_timeout: string
@@ -239,6 +233,13 @@ export interface SubscriptionSourcePayload {
   enabled: boolean
   auto_update: boolean
   interval: string
+}
+
+export interface SubscriptionRefreshSettings {
+  timeout: string
+  health_check_timeout: string
+  drain_timeout: string
+  min_available_nodes: number
 }
 
 // ---- SSE Probe types ----

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { SubscriptionSource, SubscriptionSourcePayload } from '../types'
+import type { SubscriptionRefreshSettings, SubscriptionSource, SubscriptionSourcePayload } from '../types'
 import {
   createSubscription,
   deleteSubscription,
+  fetchSubscriptionRefreshSettings,
   fetchSubscriptions,
   refreshSubscriptionSource,
   updateSubscription,
+  updateSubscriptionRefreshSettings,
 } from '../api/client'
 
 const emptyForm: SubscriptionSourcePayload = {
@@ -14,6 +16,13 @@ const emptyForm: SubscriptionSourcePayload = {
   enabled: true,
   auto_update: true,
   interval: '1h',
+}
+
+const defaultRefreshSettings: SubscriptionRefreshSettings = {
+  timeout: '30s',
+  health_check_timeout: '60s',
+  drain_timeout: '30s',
+  min_available_nodes: 1,
 }
 
 function formatTime(value?: string) {
@@ -42,14 +51,23 @@ export default function SubscriptionsPanel() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<SubscriptionSource | null>(null)
   const [form, setForm] = useState<SubscriptionSourcePayload>(emptyForm)
+  const [refreshSettings, setRefreshSettings] = useState<SubscriptionRefreshSettings>(defaultRefreshSettings)
+  const [savedRefreshSettings, setSavedRefreshSettings] = useState<SubscriptionRefreshSettings>(defaultRefreshSettings)
+  const [savingRefreshSettings, setSavingRefreshSettings] = useState(false)
   const [refreshingId, setRefreshingId] = useState<number | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
 
   const loadData = useCallback(async () => {
     try {
       setError('')
-      const res = await fetchSubscriptions()
+      const [res, settingsRes] = await Promise.all([
+        fetchSubscriptions(),
+        fetchSubscriptionRefreshSettings(),
+      ])
       setSources(res.subscriptions || [])
+      const merged = { ...defaultRefreshSettings, ...settingsRes }
+      setRefreshSettings(merged)
+      setSavedRefreshSettings(merged)
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载订阅失败')
     } finally {
@@ -153,6 +171,33 @@ export default function SubscriptionsPanel() {
     }
   }
 
+  const refreshSettingsDirty = JSON.stringify(refreshSettings) !== JSON.stringify(savedRefreshSettings)
+
+  const updateRefreshField = <K extends keyof SubscriptionRefreshSettings>(key: K, value: SubscriptionRefreshSettings[K]) => {
+    setRefreshSettings(s => ({ ...s, [key]: value }))
+  }
+
+  const saveRefreshSettings = async () => {
+    setSavingRefreshSettings(true)
+    setError('')
+    try {
+      const res = await updateSubscriptionRefreshSettings(refreshSettings)
+      const saved = {
+        timeout: res.timeout,
+        health_check_timeout: res.health_check_timeout,
+        drain_timeout: res.drain_timeout,
+        min_available_nodes: res.min_available_nodes,
+      }
+      setRefreshSettings(saved)
+      setSavedRefreshSettings(saved)
+      setSuccess(res.message || '订阅刷新设置已保存')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存订阅刷新设置失败')
+    } finally {
+      setSavingRefreshSettings(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -202,6 +247,54 @@ export default function SubscriptionsPanel() {
             <span>{success}</span>
           </div>
         )}
+
+        <div className="rounded-2xl border border-base-300/50 bg-base-100 p-5 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 flex-1">
+              <fieldset className="fieldset">
+                <legend className="fieldset-legend font-semibold text-base-content/80">订阅请求超时</legend>
+                <input
+                  className="input input-md w-full bg-base-200/50 focus:bg-base-100 font-mono"
+                  value={refreshSettings.timeout}
+                  onChange={e => updateRefreshField('timeout', e.target.value)}
+                />
+              </fieldset>
+              <fieldset className="fieldset">
+                <legend className="fieldset-legend font-semibold text-base-content/80">健康检查超时</legend>
+                <input
+                  className="input input-md w-full bg-base-200/50 focus:bg-base-100 font-mono"
+                  value={refreshSettings.health_check_timeout}
+                  onChange={e => updateRefreshField('health_check_timeout', e.target.value)}
+                />
+              </fieldset>
+              <fieldset className="fieldset">
+                <legend className="fieldset-legend font-semibold text-base-content/80">排空时间</legend>
+                <input
+                  className="input input-md w-full bg-base-200/50 focus:bg-base-100 font-mono"
+                  value={refreshSettings.drain_timeout}
+                  onChange={e => updateRefreshField('drain_timeout', e.target.value)}
+                />
+              </fieldset>
+              <fieldset className="fieldset">
+                <legend className="fieldset-legend font-semibold text-base-content/80">最小可用节点</legend>
+                <input
+                  type="number"
+                  min={1}
+                  className="input input-md w-full bg-base-200/50 focus:bg-base-100"
+                  value={refreshSettings.min_available_nodes}
+                  onChange={e => updateRefreshField('min_available_nodes', parseInt(e.target.value) || 1)}
+                />
+              </fieldset>
+            </div>
+            <button
+              className={`btn shrink-0 ${refreshSettingsDirty ? 'btn-primary' : 'btn-ghost border border-base-300'}`}
+              onClick={saveRefreshSettings}
+              disabled={savingRefreshSettings || !refreshSettingsDirty}
+            >
+              {savingRefreshSettings ? <span className="loading loading-spinner loading-sm"></span> : refreshSettingsDirty ? '保存刷新策略' : '已保存'}
+            </button>
+          </div>
+        </div>
 
         <div className="rounded-2xl border border-base-300/50 bg-base-100 shadow-sm overflow-hidden">
           <div className="overflow-x-auto">

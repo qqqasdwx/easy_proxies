@@ -130,6 +130,7 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/import", s.withAuth(s.handleImport))
 	mux.HandleFunc("/api/subscription/status", s.withAuth(s.handleSubscriptionStatus))
 	mux.HandleFunc("/api/subscription/refresh", s.withAuth(s.handleSubscriptionRefresh))
+	mux.HandleFunc("/api/subscriptions/settings", s.withAuth(s.handleSubscriptionSettings))
 	mux.HandleFunc("/api/subscriptions", s.withAuth(s.handleSubscriptions))
 	mux.HandleFunc("/api/subscriptions/", s.withAuth(s.handleSubscriptionItem))
 	mux.HandleFunc("/api/geoip/refresh", s.withAuth(s.handleGeoIPRefresh))
@@ -1348,6 +1349,105 @@ func (s *Server) handleSubscriptionStatus(w http.ResponseWriter, r *http.Request
 		"refresh_count":     status.RefreshCount,
 		"is_refreshing":     status.IsRefreshing,
 	})
+}
+
+func (s *Server) handleSubscriptionSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.cfgMu.RLock()
+		cfg := s.cfgSrc
+		s.cfgMu.RUnlock()
+		if cfg == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": "配置存储未初始化"})
+			return
+		}
+		writeJSON(w, subscriptionRefreshSettingsResponse(cfg))
+	case http.MethodPut:
+		var req struct {
+			Timeout            string `json:"timeout"`
+			HealthCheckTimeout string `json:"health_check_timeout"`
+			DrainTimeout       string `json:"drain_timeout"`
+			MinAvailableNodes  int    `json:"min_available_nodes"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "请求格式错误"})
+			return
+		}
+
+		timeout, err := parsePositiveDuration(req.Timeout, "订阅请求超时")
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		healthTimeout, err := parsePositiveDuration(req.HealthCheckTimeout, "新节点健康检查超时")
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		drainTimeout, err := parsePositiveDuration(req.DrainTimeout, "旧实例排空时间")
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		if req.MinAvailableNodes <= 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "最小可用节点数必须大于 0"})
+			return
+		}
+
+		s.cfgMu.Lock()
+		if s.cfgSrc == nil {
+			s.cfgMu.Unlock()
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": "配置存储未初始化"})
+			return
+		}
+		s.cfgSrc.SubscriptionRefresh.Timeout = timeout
+		s.cfgSrc.SubscriptionRefresh.HealthCheckTimeout = healthTimeout
+		s.cfgSrc.SubscriptionRefresh.DrainTimeout = drainTimeout
+		s.cfgSrc.SubscriptionRefresh.MinAvailableNodes = req.MinAvailableNodes
+		if s.store != nil {
+			if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {
+				s.cfgMu.Unlock()
+				w.WriteHeader(http.StatusInternalServerError)
+				writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅设置失败: %v", err)})
+				return
+			}
+		}
+		resp := subscriptionRefreshSettingsResponse(s.cfgSrc)
+		s.cfgMu.Unlock()
+
+		resp["message"] = "订阅刷新设置已保存"
+		writeJSON(w, resp)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func subscriptionRefreshSettingsResponse(cfg *config.Config) map[string]any {
+	return map[string]any{
+		"timeout":              cfg.SubscriptionRefresh.Timeout.String(),
+		"health_check_timeout": cfg.SubscriptionRefresh.HealthCheckTimeout.String(),
+		"drain_timeout":        cfg.SubscriptionRefresh.DrainTimeout.String(),
+		"min_available_nodes":  cfg.SubscriptionRefresh.MinAvailableNodes,
+	}
+}
+
+func parsePositiveDuration(value, label string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("%s不能为空", label)
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return 0, fmt.Errorf("%s格式错误", label)
+	}
+	return duration, nil
 }
 
 // handleSubscriptionRefresh triggers an immediate subscription refresh.

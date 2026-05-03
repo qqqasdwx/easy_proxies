@@ -12,6 +12,7 @@ import type {
   SubscriptionStatus,
   SubscriptionSource,
   SubscriptionSourcePayload,
+  SubscriptionRefreshSettings,
   ProbeSSEEvent,
   TrafficStreamEvent,
 } from '../types'
@@ -144,12 +145,6 @@ interface RawSettings {
     port?: number
     auto_update_enabled?: boolean
     auto_update_interval?: string
-  }
-  subscription_refresh?: {
-    timeout?: string
-    health_check_timeout?: string
-    drain_timeout?: string
-    min_available_nodes?: number
   }
   health_check?: {
     interval?: string
@@ -407,12 +402,6 @@ export async function updateSettings(settings: SettingsData): Promise<SettingsUp
         auto_update_enabled: settings.geoip_auto_update_enabled,
         auto_update_interval: settings.geoip_auto_update_interval,
       },
-      subscription_refresh: {
-        timeout: settings.subscription_refresh_timeout,
-        health_check_timeout: settings.subscription_refresh_health_check_timeout,
-        drain_timeout: settings.subscription_refresh_drain_timeout,
-        min_available_nodes: settings.subscription_refresh_min_available_nodes,
-      },
       health_check: {
         interval: settings.health_check_interval,
         timeout: settings.health_check_timeout,
@@ -478,11 +467,6 @@ function normalizeSettings(raw: RawSettings): SettingsData {
     geoip_port: raw.geoip?.port || 1221,
     geoip_auto_update_enabled: raw.geoip?.auto_update_enabled ?? false,
     geoip_auto_update_interval: raw.geoip?.auto_update_interval || '24h0m0s',
-
-    subscription_refresh_timeout: raw.subscription_refresh?.timeout || '30s',
-    subscription_refresh_health_check_timeout: raw.subscription_refresh?.health_check_timeout || '60s',
-    subscription_refresh_drain_timeout: raw.subscription_refresh?.drain_timeout || '30s',
-    subscription_refresh_min_available_nodes: raw.subscription_refresh?.min_available_nodes || 1,
 
     health_check_interval: raw.health_check?.interval || '5m0s',
     health_check_timeout: raw.health_check?.timeout || '10s',
@@ -581,6 +565,17 @@ export async function deleteSubscription(id: number): Promise<{ message: string 
 
 export async function refreshSubscriptionSource(id: number): Promise<{ message: string; subscription?: SubscriptionSource }> {
   return request(`/api/subscriptions/${encodeURIComponent(String(id))}/refresh`, { method: 'POST' })
+}
+
+export async function fetchSubscriptionRefreshSettings(): Promise<SubscriptionRefreshSettings> {
+  return request<SubscriptionRefreshSettings>('/api/subscriptions/settings')
+}
+
+export async function updateSubscriptionRefreshSettings(settings: SubscriptionRefreshSettings): Promise<SubscriptionRefreshSettings & { message?: string }> {
+  return request('/api/subscriptions/settings', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  })
 }
 
 // ---- Export API ----
