@@ -368,7 +368,7 @@ export default function ManagePanel() {
     e.preventDefault()
     if (modalReadOnly) return
     if (!form.name.trim()) { setFormError('节点名称不能为空'); return }
-    if (!form.uri.trim() && !form.outbound_json.trim()) { setFormError('URI 或 JSON 不能为空'); return }
+    if (!form.outbound_json.trim()) { setFormError('JSON 不能为空，请先解析 URI 或填写 JSON'); return }
 
     setSubmitting(true)
     setFormError('')
