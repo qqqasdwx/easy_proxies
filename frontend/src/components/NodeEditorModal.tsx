@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ConfigNodePayload } from '../types'
 import { parseNodeURI } from '../api/client'
 
-type EditorTab = 'form' | 'json' | 'inbound'
+type EditorTab = 'outbound' | 'inbound'
+type OutboundObject = Record<string, unknown>
 
 type OutboundForm = {
   type: string
@@ -39,8 +40,6 @@ type OutboundForm = {
   up_mbps: number
   down_mbps: number
   hop_interval: string
-  hop_interval_max: string
-  bbr_profile: string
   brutal_debug: boolean
   congestion_control: string
   udp_relay_mode: string
@@ -95,7 +94,20 @@ const tlsVersionOptions = ['', '1.0', '1.1', '1.2', '1.3']
 const tuicCongestionOptions = ['cubic', 'new_reno', 'bbr']
 const tuicRelayModeOptions = ['', 'native', 'quic']
 const obfsTypeOptions = ['', 'salamander']
-const bbrProfileOptions = ['', 'conservative', 'standard', 'aggressive']
+const tlsPatchFields: Array<keyof OutboundForm> = [
+  'tls_enabled',
+  'tls_server_name',
+  'tls_insecure',
+  'tls_alpn',
+  'tls_min_version',
+  'tls_max_version',
+]
+const transportPatchFields: Array<keyof OutboundForm> = [
+  'transport_type',
+  'transport_path',
+  'transport_host',
+  'transport_method',
+]
 
 const defaultOutboundForm: OutboundForm = {
   type: 'socks',
@@ -132,8 +144,6 @@ const defaultOutboundForm: OutboundForm = {
   up_mbps: 0,
   down_mbps: 0,
   hop_interval: '',
-  hop_interval_max: '',
-  bbr_profile: '',
   brutal_debug: false,
   congestion_control: 'cubic',
   udp_relay_mode: '',
@@ -146,71 +156,116 @@ const defaultOutboundForm: OutboundForm = {
 }
 
 function parseOutboundForm(raw: string): OutboundForm | null {
-  if (!raw.trim()) return null
+  const obj = parseOutboundObject(raw)
+  if (!obj) return null
   try {
-    const obj = JSON.parse(raw) as Record<string, any>
-    const transport = obj.transport || {}
-    const hostHeader = transport.headers?.Host || transport.headers?.host
-    const transportHost = Array.isArray(hostHeader) ? hostHeader[0] : (transport.host || '')
+    const tls = readRecord(obj.tls)
+    const transport = readRecord(obj.transport) || {}
+    const transportHeaders = readRecord(transport.headers)
+    const hostHeader = transportHeaders?.Host || transportHeaders?.host
+    const transportHost = firstStringValue(hostHeader) || firstStringValue(transport.host)
     return {
       ...defaultOutboundForm,
-      type: obj.type || defaultOutboundForm.type,
-      server: obj.server || '',
-      server_port: Number(obj.server_port || 0),
-      server_ports: Array.isArray(obj.server_ports) ? obj.server_ports.join(',') : (obj.server_ports || ''),
-      uuid: obj.uuid || '',
-      password: obj.password || '',
-      username: obj.username || '',
-      method: obj.method || defaultOutboundForm.method,
-      plugin: obj.plugin || '',
-      plugin_opts: obj.plugin_opts || '',
-      security: obj.security || defaultOutboundForm.security,
-      alter_id: Number(obj.alter_id || 0),
-      global_padding: !!obj.global_padding,
-      authenticated_length: obj.authenticated_length ?? defaultOutboundForm.authenticated_length,
-      version: obj.version || defaultOutboundForm.version,
-      network: obj.network || '',
-      http_path: obj.path || '',
-      tls_enabled: !!obj.tls?.enabled,
-      tls_server_name: obj.tls?.server_name || '',
-      tls_insecure: !!obj.tls?.insecure,
-      tls_alpn: Array.isArray(obj.tls?.alpn) ? obj.tls.alpn.join(',') : '',
-      tls_min_version: obj.tls?.min_version || '',
-      tls_max_version: obj.tls?.max_version || '',
-      transport_type: transport.type || '',
-      transport_path: transport.path || transport.service_name || '',
-      transport_host: Array.isArray(transportHost) ? transportHost[0] : transportHost,
-      transport_method: transport.method || '',
-      flow: obj.flow || '',
-      packet_encoding: obj.packet_encoding || '',
-      obfs_type: obj.obfs?.type || '',
-      obfs_password: obj.obfs?.password || '',
-      up_mbps: Number(obj.up_mbps || 0),
-      down_mbps: Number(obj.down_mbps || 0),
-      hop_interval: obj.hop_interval || '',
-      hop_interval_max: obj.hop_interval_max || '',
-      bbr_profile: obj.bbr_profile || '',
-      brutal_debug: !!obj.brutal_debug,
-      congestion_control: obj.congestion_control || defaultOutboundForm.congestion_control,
-      udp_relay_mode: obj.udp_relay_mode || '',
-      udp_over_stream: !!obj.udp_over_stream,
-      zero_rtt_handshake: !!obj.zero_rtt_handshake,
-      heartbeat: obj.heartbeat || '',
-      idle_session_check_interval: obj.idle_session_check_interval || '',
-      idle_session_timeout: obj.idle_session_timeout || '',
-      min_idle_session: Number(obj.min_idle_session || 0),
+      type: readString(obj, 'type', defaultOutboundForm.type),
+      server: readString(obj, 'server'),
+      server_port: readNumber(obj, 'server_port'),
+      server_ports: parseListValue(obj.server_ports),
+      uuid: readString(obj, 'uuid'),
+      password: readString(obj, 'password'),
+      username: readString(obj, 'username'),
+      method: readString(obj, 'method', defaultOutboundForm.method),
+      plugin: readString(obj, 'plugin'),
+      plugin_opts: readString(obj, 'plugin_opts'),
+      security: readString(obj, 'security', defaultOutboundForm.security),
+      alter_id: readNumber(obj, 'alter_id'),
+      global_padding: readBoolean(obj, 'global_padding'),
+      authenticated_length: readOptionalBoolean(obj, 'authenticated_length', defaultOutboundForm.authenticated_length),
+      version: readString(obj, 'version', defaultOutboundForm.version),
+      network: parseNetworkValue(obj.network),
+      http_path: readString(obj, 'path'),
+      tls_enabled: readBoolean(tls, 'enabled'),
+      tls_server_name: readString(tls, 'server_name'),
+      tls_insecure: readBoolean(tls, 'insecure'),
+      tls_alpn: parseListValue(tls?.alpn),
+      tls_min_version: readString(tls, 'min_version'),
+      tls_max_version: readString(tls, 'max_version'),
+      transport_type: readString(transport, 'type'),
+      transport_path: readString(transport, 'path') || readString(transport, 'service_name'),
+      transport_host: transportHost,
+      transport_method: readString(transport, 'method'),
+      flow: readString(obj, 'flow'),
+      packet_encoding: readString(obj, 'packet_encoding'),
+      obfs_type: readString(readRecord(obj.obfs), 'type'),
+      obfs_password: readString(readRecord(obj.obfs), 'password'),
+      up_mbps: readNumber(obj, 'up_mbps'),
+      down_mbps: readNumber(obj, 'down_mbps'),
+      hop_interval: readString(obj, 'hop_interval'),
+      brutal_debug: readBoolean(obj, 'brutal_debug'),
+      congestion_control: readString(obj, 'congestion_control', defaultOutboundForm.congestion_control),
+      udp_relay_mode: readString(obj, 'udp_relay_mode'),
+      udp_over_stream: readBoolean(obj, 'udp_over_stream'),
+      zero_rtt_handshake: readBoolean(obj, 'zero_rtt_handshake'),
+      heartbeat: readString(obj, 'heartbeat'),
+      idle_session_check_interval: readString(obj, 'idle_session_check_interval'),
+      idle_session_timeout: readString(obj, 'idle_session_timeout'),
+      min_idle_session: readNumber(obj, 'min_idle_session'),
     }
   } catch {
     return null
   }
 }
 
-function parseOutboundObject(raw: string): Record<string, any> | null {
+function isRecord(value: unknown): value is OutboundObject {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function readRecord(value: unknown): OutboundObject | undefined {
+  return isRecord(value) ? value : undefined
+}
+
+function readString(obj: OutboundObject | undefined, key: string, fallback = ''): string {
+  const value = obj?.[key]
+  return typeof value === 'string' ? value : fallback
+}
+
+function readNumber(obj: OutboundObject | undefined, key: string): number {
+  const value = obj?.[key]
+  return typeof value === 'number' ? value : 0
+}
+
+function readBoolean(obj: OutboundObject | undefined, key: string): boolean {
+  return obj?.[key] === true
+}
+
+function readOptionalBoolean(obj: OutboundObject | undefined, key: string, fallback: boolean): boolean {
+  const value = obj?.[key]
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function parseListValue(value: unknown): string {
+  if (Array.isArray(value)) return value.join(',')
+  return typeof value === 'string' ? value : ''
+}
+
+function firstStringValue(value: unknown): string {
+  if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : ''
+  return typeof value === 'string' ? value : ''
+}
+
+function parseNetworkValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    if (value.length === 1 && (value[0] === 'tcp' || value[0] === 'udp')) return value[0]
+    return ''
+  }
+  return value === 'tcp' || value === 'udp' ? value : ''
+}
+
+function parseOutboundObject(raw: string): OutboundObject | null {
   if (!raw.trim()) return null
   try {
     const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    return parsed as Record<string, any>
+    if (!isRecord(parsed)) return null
+    return parsed
   } catch {
     return null
   }
@@ -223,69 +278,137 @@ function validateOutboundJSON(raw: string): string {
   return parsed.type ? '' : 'JSON 缺少 type 字段'
 }
 
-function ensureObject(parent: Record<string, any>, key: string): Record<string, any> {
+function ensureObject(parent: OutboundObject, key: string): OutboundObject {
   const value = parent[key]
-  if (value && typeof value === 'object' && !Array.isArray(value)) return value
-  const next: Record<string, any> = {}
+  if (isRecord(value)) return value
+  const next: OutboundObject = {}
   parent[key] = next
   return next
 }
 
-function removeIfEmptyObject(parent: Record<string, any>, key: string) {
+function removeIfEmptyObject(parent: OutboundObject, key: string) {
   const value = parent[key]
-  if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) {
+  if (isRecord(value) && Object.keys(value).length === 0) {
     delete parent[key]
   }
 }
 
-function setStringField(obj: Record<string, any>, key: string, value: string) {
+function setStringField(obj: OutboundObject, key: string, value: string) {
   const next = value.trim()
   if (next) obj[key] = next
   else delete obj[key]
 }
 
-function setNumberField(obj: Record<string, any>, key: string, value: number) {
+function setNumberField(obj: OutboundObject, key: string, value: number) {
   if (value > 0) obj[key] = value
   else delete obj[key]
 }
 
-function setBooleanField(obj: Record<string, any>, key: string, value: boolean) {
+function setBooleanField(obj: OutboundObject, key: string, value: boolean) {
   if (value) obj[key] = true
   else delete obj[key]
 }
 
-function setArrayField(obj: Record<string, any>, key: string, value: string) {
+function setArrayField(obj: OutboundObject, key: string, value: string) {
   const parts = value.split(',').map(item => item.trim()).filter(Boolean)
   if (parts.length > 0) obj[key] = parts
   else delete obj[key]
 }
 
-function setTransportHost(transport: Record<string, any>, transportType: string, value: string) {
+function hasPatch(patch: Partial<OutboundForm>, fields: Array<keyof OutboundForm>) {
+  return fields.some(field => field in patch)
+}
+
+function clearUnsupportedManagedFields(outbound: OutboundObject, type: string) {
+  if (!supportsNetwork(type)) delete outbound.network
+  if (!supportsTLS(type)) delete outbound.tls
+  if (!isV2RayLike(type)) delete outbound.transport
+
+  if (type !== 'socks') delete outbound.version
+  if (type !== 'socks' && type !== 'http') delete outbound.username
+  if (!['socks', 'http', 'shadowsocks', 'trojan', 'hysteria2', 'tuic', 'anytls'].includes(type)) delete outbound.password
+  if (type !== 'http') delete outbound.path
+
+  if (type !== 'shadowsocks') {
+    delete outbound.method
+    delete outbound.plugin
+    delete outbound.plugin_opts
+  }
+
+  if (type !== 'vmess') {
+    delete outbound.security
+    delete outbound.alter_id
+    delete outbound.global_padding
+    delete outbound.authenticated_length
+  }
+
+  if (type !== 'vmess' && type !== 'vless' && type !== 'tuic') delete outbound.uuid
+  if (type !== 'vless') delete outbound.flow
+  if (type !== 'vmess' && type !== 'vless') delete outbound.packet_encoding
+
+  if (type !== 'hysteria2') {
+    delete outbound.server_ports
+    delete outbound.hop_interval
+    delete outbound.up_mbps
+    delete outbound.down_mbps
+    delete outbound.obfs
+    delete outbound.brutal_debug
+  }
+
+  if (type !== 'tuic') {
+    delete outbound.congestion_control
+    delete outbound.udp_relay_mode
+    delete outbound.udp_over_stream
+    delete outbound.zero_rtt_handshake
+    delete outbound.heartbeat
+  }
+
+  if (type !== 'anytls') {
+    delete outbound.idle_session_check_interval
+    delete outbound.idle_session_timeout
+    delete outbound.min_idle_session
+  }
+}
+
+function resetTransportForType(outbound: OutboundObject, transportType: string) {
+  if (!transportType.trim()) {
+    delete outbound.transport
+    return undefined
+  }
+  const transport: OutboundObject = { type: transportType }
+  outbound.transport = transport
+  return transport
+}
+
+function setTransportHost(transport: OutboundObject, transportType: string, value: string) {
   const next = value.trim()
   if (!next) {
     delete transport.host
-    if (transport.headers && typeof transport.headers === 'object' && !Array.isArray(transport.headers)) {
-      delete transport.headers.Host
-      delete transport.headers.host
-      if (Object.keys(transport.headers).length === 0) delete transport.headers
+    const headers = readRecord(transport.headers)
+    if (headers) {
+      delete headers.Host
+      delete headers.host
+      if (Object.keys(headers).length === 0) delete transport.headers
     }
     return
   }
   if (transportType === 'http') {
     transport.host = [next]
-    if (transport.headers && typeof transport.headers === 'object' && !Array.isArray(transport.headers)) {
-      delete transport.headers.Host
-      delete transport.headers.host
-      if (Object.keys(transport.headers).length === 0) delete transport.headers
+    const headers = readRecord(transport.headers)
+    if (headers) {
+      delete headers.Host
+      delete headers.host
+      if (Object.keys(headers).length === 0) delete transport.headers
     }
     return
   }
   if (transportType === 'httpupgrade') {
     transport.host = next
-    if (transport.headers && typeof transport.headers === 'object' && !Array.isArray(transport.headers)) {
-      delete transport.headers.Host
-      delete transport.headers.host
-      if (Object.keys(transport.headers).length === 0) delete transport.headers
+    const headers = readRecord(transport.headers)
+    if (headers) {
+      delete headers.Host
+      delete headers.host
+      if (Object.keys(headers).length === 0) delete transport.headers
     }
     return
   }
@@ -295,9 +418,12 @@ function setTransportHost(transport: Record<string, any>, transportType: string,
 }
 
 function patchOutboundJSON(raw: string, nextForm: OutboundForm, patch: Partial<OutboundForm>, tag: string): string {
-  const outbound = parseOutboundObject(raw) || { type: nextForm.type || 'socks', tag: tag || 'node' }
+  const outbound: OutboundObject = parseOutboundObject(raw) || { type: nextForm.type || 'socks', tag: tag || 'node' }
 
-  if ('type' in patch) setStringField(outbound, 'type', nextForm.type)
+  if ('type' in patch) {
+    setStringField(outbound, 'type', nextForm.type)
+    clearUnsupportedManagedFields(outbound, nextForm.type)
+  }
   if ('server' in patch) setStringField(outbound, 'server', nextForm.server)
   if ('server_port' in patch) setNumberField(outbound, 'server_port', nextForm.server_port)
   if ('server_ports' in patch) setArrayField(outbound, 'server_ports', nextForm.server_ports)
@@ -305,8 +431,14 @@ function patchOutboundJSON(raw: string, nextForm: OutboundForm, patch: Partial<O
   if ('password' in patch) setStringField(outbound, 'password', nextForm.password)
   if ('username' in patch) setStringField(outbound, 'username', nextForm.username)
   if ('method' in patch) setStringField(outbound, 'method', nextForm.method)
-  if ('plugin' in patch) setStringField(outbound, 'plugin', nextForm.plugin)
-  if ('plugin_opts' in patch) setStringField(outbound, 'plugin_opts', nextForm.plugin_opts)
+  if ('plugin' in patch) {
+    setStringField(outbound, 'plugin', nextForm.plugin)
+    delete outbound.plugin_opts
+  }
+  if ('plugin_opts' in patch) {
+    if (nextForm.plugin) setStringField(outbound, 'plugin_opts', nextForm.plugin_opts)
+    else delete outbound.plugin_opts
+  }
   if ('security' in patch) setStringField(outbound, 'security', nextForm.security)
   if ('alter_id' in patch) setNumberField(outbound, 'alter_id', nextForm.alter_id)
   if ('global_padding' in patch) setBooleanField(outbound, 'global_padding', nextForm.global_padding)
@@ -319,8 +451,6 @@ function patchOutboundJSON(raw: string, nextForm: OutboundForm, patch: Partial<O
   if ('up_mbps' in patch) setNumberField(outbound, 'up_mbps', nextForm.up_mbps)
   if ('down_mbps' in patch) setNumberField(outbound, 'down_mbps', nextForm.down_mbps)
   if ('hop_interval' in patch) setStringField(outbound, 'hop_interval', nextForm.hop_interval)
-  if ('hop_interval_max' in patch) setStringField(outbound, 'hop_interval_max', nextForm.hop_interval_max)
-  if ('bbr_profile' in patch) setStringField(outbound, 'bbr_profile', nextForm.bbr_profile)
   if ('brutal_debug' in patch) setBooleanField(outbound, 'brutal_debug', nextForm.brutal_debug)
   if ('congestion_control' in patch) setStringField(outbound, 'congestion_control', nextForm.congestion_control)
   if ('udp_relay_mode' in patch) setStringField(outbound, 'udp_relay_mode', nextForm.udp_relay_mode)
@@ -331,39 +461,56 @@ function patchOutboundJSON(raw: string, nextForm: OutboundForm, patch: Partial<O
   if ('idle_session_timeout' in patch) setStringField(outbound, 'idle_session_timeout', nextForm.idle_session_timeout)
   if ('min_idle_session' in patch) setNumberField(outbound, 'min_idle_session', nextForm.min_idle_session)
 
-  if ('tls_enabled' in patch || 'tls_server_name' in patch || 'tls_insecure' in patch) {
-    const tls = ensureObject(outbound, 'tls')
-    if ('tls_enabled' in patch) tls.enabled = nextForm.tls_enabled
-    if ('tls_server_name' in patch) setStringField(tls, 'server_name', nextForm.tls_server_name)
-    if ('tls_insecure' in patch) tls.insecure = nextForm.tls_insecure
-    if ('tls_alpn' in patch) setArrayField(tls, 'alpn', nextForm.tls_alpn)
-    if ('tls_min_version' in patch) setStringField(tls, 'min_version', nextForm.tls_min_version)
-    if ('tls_max_version' in patch) setStringField(tls, 'max_version', nextForm.tls_max_version)
-    removeIfEmptyObject(outbound, 'tls')
+  if (hasPatch(patch, tlsPatchFields)) {
+    if ('tls_enabled' in patch && !nextForm.tls_enabled) {
+      delete outbound.tls
+    } else {
+      const tls = ensureObject(outbound, 'tls')
+      if ('tls_enabled' in patch) tls.enabled = true
+      if ('tls_server_name' in patch) setStringField(tls, 'server_name', nextForm.tls_server_name)
+      if ('tls_insecure' in patch) setBooleanField(tls, 'insecure', nextForm.tls_insecure)
+      if ('tls_alpn' in patch) setArrayField(tls, 'alpn', nextForm.tls_alpn)
+      if ('tls_min_version' in patch) setStringField(tls, 'min_version', nextForm.tls_min_version)
+      if ('tls_max_version' in patch) setStringField(tls, 'max_version', nextForm.tls_max_version)
+      removeIfEmptyObject(outbound, 'tls')
+    }
   }
 
-  if ('transport_type' in patch || 'transport_path' in patch || 'transport_host' in patch) {
-    const transport = ensureObject(outbound, 'transport')
-    if ('transport_type' in patch) setStringField(transport, 'type', nextForm.transport_type)
-    if ('transport_method' in patch) setStringField(transport, 'method', nextForm.transport_method)
-    if ('transport_path' in patch) {
-      if (nextForm.transport_type === 'grpc') {
-        setStringField(transport, 'service_name', nextForm.transport_path)
-        delete transport.path
-      } else {
-        setStringField(transport, 'path', nextForm.transport_path)
-        delete transport.service_name
+  if (hasPatch(patch, transportPatchFields)) {
+    const transport = 'transport_type' in patch
+      ? resetTransportForType(outbound, nextForm.transport_type)
+      : ensureObject(outbound, 'transport')
+    if (transport) {
+      if ('transport_method' in patch) setStringField(transport, 'method', nextForm.transport_method)
+      if ('transport_path' in patch) {
+        if (nextForm.transport_type === 'grpc') {
+          setStringField(transport, 'service_name', nextForm.transport_path)
+          delete transport.path
+        } else {
+          setStringField(transport, 'path', nextForm.transport_path)
+          delete transport.service_name
+        }
       }
+      if ('transport_host' in patch) setTransportHost(transport, nextForm.transport_type, nextForm.transport_host)
+      removeIfEmptyObject(outbound, 'transport')
     }
-    if ('transport_host' in patch) setTransportHost(transport, nextForm.transport_type, nextForm.transport_host)
-    removeIfEmptyObject(outbound, 'transport')
   }
 
   if ('obfs_type' in patch || 'obfs_password' in patch) {
-    const obfs = ensureObject(outbound, 'obfs')
-    if ('obfs_type' in patch) setStringField(obfs, 'type', nextForm.obfs_type)
-    if ('obfs_password' in patch) setStringField(obfs, 'password', nextForm.obfs_password)
-    removeIfEmptyObject(outbound, 'obfs')
+    if ('obfs_type' in patch && !nextForm.obfs_type) {
+      delete outbound.obfs
+    } else {
+      const obfs = ensureObject(outbound, 'obfs')
+      if ('obfs_type' in patch) {
+        setStringField(obfs, 'type', nextForm.obfs_type)
+        delete obfs.password
+      }
+      if ('obfs_password' in patch) {
+        if (nextForm.obfs_type) setStringField(obfs, 'password', nextForm.obfs_password)
+        else delete obfs.password
+      }
+      removeIfEmptyObject(outbound, 'obfs')
+    }
   }
 
   return JSON.stringify(outbound, null, 2)
@@ -408,7 +555,7 @@ interface Props {
   formError: string
   submitting: boolean
   onClose: () => void
-  onSubmit: (e: React.FormEvent) => void
+  onSubmit: () => void
   onChange: (form: ConfigNodePayload) => void
 }
 
@@ -423,7 +570,7 @@ export default function NodeEditorModal({
   onSubmit,
   onChange,
 }: Props) {
-  const [tab, setTab] = useState<EditorTab>('form')
+  const [tab, setTab] = useState<EditorTab>('outbound')
   const [jsonError, setJsonError] = useState('')
   const [uriError, setUriError] = useState('')
   const [uriParsing, setUriParsing] = useState(false)
@@ -431,11 +578,13 @@ export default function NodeEditorModal({
 
   useEffect(() => {
     if (!open) return
-    setTab(editingName ? 'form' : 'json')
+    setTab('outbound')
     setJsonError(validateOutboundJSON(form.outbound_json || ''))
     setUriError('')
     setUriParsing(false)
     setOutboundForm(parseOutboundForm(form.outbound_json || '') || defaultOutboundForm)
+    // Only initialize when the modal target changes; live JSON edits manage form sync separately.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editingName])
 
   const jsonPreview = useMemo(() => form.outbound_json || '', [form.outbound_json])
@@ -444,8 +593,9 @@ export default function NodeEditorModal({
 
   const updateOutboundForm = (patch: Partial<OutboundForm>) => {
     const next = { ...outboundForm, ...patch }
-    setOutboundForm(next)
     const outboundJSON = patchOutboundJSON(form.outbound_json || '', next, patch, form.name)
+    const synced = parseOutboundForm(outboundJSON) || next
+    setOutboundForm({ ...synced, ...patch })
     onChange({ ...form, outbound_json: outboundJSON })
     setJsonError('')
   }
@@ -488,25 +638,32 @@ export default function NodeEditorModal({
     }
   }
 
+  const handleFormKeyDown = (event: React.KeyboardEvent<HTMLFormElement>) => {
+    if (event.key !== 'Enter') return
+    const target = event.target as HTMLElement
+    if (target.tagName === 'TEXTAREA') return
+    event.preventDefault()
+  }
+
   const title = readOnly ? `查看节点: ${editingName}` : editingName ? `编辑节点: ${editingName}` : '添加节点'
 
   return (
     <div className="modal modal-open">
-      <div className="modal-box max-w-4xl">
+      <div className="modal-box max-w-6xl">
         <h3 className="font-bold text-xl mb-4">{title}</h3>
-        <form onSubmit={onSubmit}>
+        <form onSubmit={(event) => event.preventDefault()} onKeyDown={handleFormKeyDown}>
           {formError && <div className="alert alert-error mb-3 py-2 text-sm"><span>{formError}</span></div>}
-          {jsonError && tab === 'json' && <div className="alert alert-warning mb-3 py-2 text-sm"><span>{jsonError}</span></div>}
-          {uriError && tab === 'json' && <div className="alert alert-warning mb-3 py-2 text-sm"><span>{uriError}</span></div>}
+          {jsonError && tab === 'outbound' && <div className="alert alert-warning mb-3 py-2 text-sm"><span>{jsonError}</span></div>}
+          {uriError && tab === 'outbound' && <div className="alert alert-warning mb-3 py-2 text-sm"><span>{uriError}</span></div>}
 
           <div role="tablist" className="tabs tabs-boxed mb-4 bg-base-200/70">
-            <button type="button" role="tab" className={`tab ${tab === 'form' ? 'tab-active' : ''}`} onClick={() => setTab('form')}>Form</button>
-            <button type="button" role="tab" className={`tab ${tab === 'json' ? 'tab-active' : ''}`} onClick={() => setTab('json')}>JSON</button>
+            <button type="button" role="tab" className={`tab ${tab === 'outbound' ? 'tab-active' : ''}`} onClick={() => setTab('outbound')}>出站</button>
             <button type="button" role="tab" className={`tab ${tab === 'inbound' ? 'tab-active' : ''}`} onClick={() => setTab('inbound')}>入站</button>
           </div>
 
-          {tab === 'form' && (
-            <div className="space-y-4">
+          {tab === 'outbound' && (
+            <div className="grid xl:grid-cols-[minmax(0,1fr)_minmax(380px,0.9fr)] gap-4 items-start">
+            <div className="space-y-4 min-w-0">
               <div className="grid md:grid-cols-2 gap-3">
                 <fieldset className="fieldset md:col-span-2">
                   <legend className="fieldset-legend">名称 *</legend>
@@ -696,16 +853,6 @@ export default function NodeEditorModal({
                       <legend className="fieldset-legend">Hop Interval</legend>
                       <input className="input input-sm w-full" value={outboundForm.hop_interval} disabled={readOnly} onChange={(e) => updateOutboundForm({ hop_interval: e.target.value })} />
                     </fieldset>
-                    <fieldset className="fieldset">
-                      <legend className="fieldset-legend">Hop Interval Max</legend>
-                      <input className="input input-sm w-full" value={outboundForm.hop_interval_max} disabled={readOnly} onChange={(e) => updateOutboundForm({ hop_interval_max: e.target.value })} />
-                    </fieldset>
-                    <fieldset className="fieldset">
-                      <legend className="fieldset-legend">BBR Profile</legend>
-                      <select className="select select-sm w-full" value={outboundForm.bbr_profile} disabled={readOnly} onChange={(e) => updateOutboundForm({ bbr_profile: e.target.value })}>
-                        {bbrProfileOptions.map(value => <option key={value || 'none'} value={value}>{value || '默认'}</option>)}
-                      </select>
-                    </fieldset>
                     <label className="label cursor-pointer justify-start gap-3">
                       <input type="checkbox" className="checkbox checkbox-sm" checked={outboundForm.brutal_debug} disabled={readOnly} onChange={(e) => updateOutboundForm({ brutal_debug: e.target.checked })} />
                       <span className="label-text">Brutal Debug</span>
@@ -846,10 +993,8 @@ export default function NodeEditorModal({
                 </>
               )}
             </div>
-          )}
 
-          {tab === 'json' && (
-            <div className="space-y-3">
+            <div className="space-y-3 min-w-0 xl:sticky xl:top-4">
               <fieldset className="fieldset">
                 <legend className="fieldset-legend">URI</legend>
                 <div className="join w-full">
@@ -874,12 +1019,13 @@ export default function NodeEditorModal({
                 </div>
               </fieldset>
               <textarea
-                className="textarea textarea-bordered w-full min-h-[380px] font-mono text-xs"
+                className="textarea textarea-bordered w-full min-h-[560px] font-mono text-xs"
                 value={jsonPreview}
                 disabled={readOnly}
                 onChange={(e) => handleJSONChange(e.target.value)}
                 placeholder={'{\n  "type": "socks",\n  "tag": "node",\n  "server": "127.0.0.1",\n  "server_port": 1080\n}'}
               />
+            </div>
             </div>
           )}
 
@@ -912,16 +1058,14 @@ export default function NodeEditorModal({
           <div className="modal-action">
             <button type="button" className="btn btn-ghost" onClick={onClose}>{readOnly ? '关闭' : '取消'}</button>
             {!readOnly && (
-              <button type="submit" className="btn btn-primary" disabled={submitting || uriParsing || !!jsonError}>
+              <button type="button" className="btn btn-primary" disabled={submitting || uriParsing || !!jsonError} onClick={onSubmit}>
                 {submitting ? <span className="loading loading-spinner loading-xs"></span> : (editingName ? '更新' : '添加')}
               </button>
             )}
           </div>
         </form>
       </div>
-      <form method="dialog" className="modal-backdrop" onClick={() => !submitting && onClose()}>
-        <button>close</button>
-      </form>
+      <div className="modal-backdrop" aria-hidden="true"></div>
     </div>
   )
 }

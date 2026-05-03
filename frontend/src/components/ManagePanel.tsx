@@ -364,8 +364,7 @@ export default function ManagePanel() {
     setModalOpen(true)
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSubmit = async () => {
     if (modalReadOnly) return
     if (!form.name.trim()) { setFormError('节点名称不能为空'); return }
     if (!form.outbound_json.trim()) { setFormError('JSON 不能为空，请先解析 URI 或填写 JSON'); return }
