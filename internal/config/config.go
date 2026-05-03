@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -51,7 +52,7 @@ type LogConfig struct {
 // GeoIPConfig controls GeoIP-based region routing.
 type GeoIPConfig struct {
 	Enabled            bool          `yaml:"enabled"`              // 是否启用 GeoIP 地域分区
-	DatabasePath       string        `yaml:"database_path"`        // GeoLite2-Country.mmdb 文件路径
+	DatabasePath       string        `yaml:"database_path"`        // 系统管理的 GeoLite2-Country.mmdb 文件路径
 	Listen             string        `yaml:"listen"`               // GeoIP 路由监听地址，默认使用 listener 配置
 	Port               uint16        `yaml:"port"`                 // GeoIP 路由监听端口，默认 1221
 	AutoUpdateEnabled  bool          `yaml:"auto_update_enabled"`  // 是否启用自动更新数据库
@@ -91,10 +92,10 @@ type ManagementConfig struct {
 	Password    string `yaml:"-"` // WebUI 访问密码，只从环境变量读取，为空则不需要密码
 }
 
-// SubscriptionRefreshConfig controls subscription auto-refresh and reload settings.
+// SubscriptionRefreshConfig controls subscription refresh timeouts and reload safety.
 type SubscriptionRefreshConfig struct {
-	Enabled            bool          `yaml:"enabled"`              // 是否启用定时刷新
-	Interval           time.Duration `yaml:"interval"`             // 刷新间隔，默认 1 小时
+	Enabled            bool          `yaml:"enabled"`              // 兼容旧字段：调度以订阅源 auto_update 为准
+	Interval           time.Duration `yaml:"interval"`             // 兼容旧字段：订阅源缺省刷新间隔
 	Timeout            time.Duration `yaml:"timeout"`              // 获取订阅的超时时间
 	HealthCheckTimeout time.Duration `yaml:"health_check_timeout"` // 新节点健康检查超时
 	DrainTimeout       time.Duration `yaml:"drain_timeout"`        // 旧实例排空超时时间
@@ -121,6 +122,15 @@ const (
 )
 
 const runtimeConfigSettingKey = "runtime_config"
+const defaultGeoIPDatabaseName = "GeoLite2-Country.mmdb"
+
+// DefaultGeoIPDatabasePath returns the built-in GeoIP database location.
+func DefaultGeoIPDatabasePath() string {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return filepath.Join("/app/data", defaultGeoIPDatabaseName)
+	}
+	return filepath.Join("data", defaultGeoIPDatabaseName)
+}
 
 // NormalizeInboundProtocol normalizes inbound protocol aliases and validates the value.
 func NormalizeInboundProtocol(value string) (string, error) {
@@ -341,6 +351,10 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		c.Management.Enabled = &defaultEnabled
 	}
 	c.normalizeDatabasePath()
+	c.GeoIP.DatabasePath = DefaultGeoIPDatabasePath()
+	if c.GeoIP.AutoUpdateInterval <= 0 {
+		c.GeoIP.AutoUpdateInterval = 24 * time.Hour
+	}
 	if c.SubscriptionRefresh.Interval <= 0 {
 		c.SubscriptionRefresh.Interval = 1 * time.Hour
 	}

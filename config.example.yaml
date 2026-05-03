@@ -98,20 +98,19 @@ dns:
 # 启用后会为节点打上地域标签（jp/kr/us/hk/tw/other），用于 WebUI 统计和筛选。
 geoip:
   enabled: true                      # 是否启用 GeoIP 地域标记
-  database_path: "./GeoLite2-Country.mmdb"           # GeoIP 数据库路径（首次启动时自动下载）
   auto_update_enabled: true                          # 是否启用自动更新数据库（推荐）
   auto_update_interval: 24h                          # 自动更新间隔（默认 24 小时）
   # 注意：
+  #   - 数据库路径由程序管理：Docker 为 /app/data，非 Docker 为同级 data 目录
   #   - 首次启动会自动从 GitHub 下载 GeoIP 数据库（约 9MB）
   #   - 启用 auto_update_enabled 后，数据库会定期自动更新，无需重启容器
   #   - 更新过程采用热重载，不会中断现有连接
 
 # ───────────────────────────────────────────────────────────────
-# 订阅自动刷新配置（可选）
+# 订阅刷新高级参数（可选）
 # ───────────────────────────────────────────────────────────────
+# 订阅源、自动更新开关和刷新间隔在 WebUI「订阅管理」中配置。
 # subscription_refresh:
-#   enabled: false              # 是否启用定时刷新
-#   interval: 1h                # 刷新间隔（默认 1 小时）
 #   timeout: 30s                # 获取订阅的超时时间
 #   health_check_timeout: 60s   # 新节点健康检查超时
 #   drain_timeout: 30s          # 旧实例排空超时时间

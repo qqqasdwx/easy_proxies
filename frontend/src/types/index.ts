@@ -112,17 +112,8 @@ export interface SettingsData {
   management_probe_target: string
   management_health_check_interval: string
 
-  // Subscription refresh
-  sub_refresh_enabled: boolean
-  sub_refresh_interval: string
-  sub_refresh_timeout: string
-  sub_refresh_health_check_timeout: string
-  sub_refresh_drain_timeout: string
-  sub_refresh_min_available_nodes: number
-
   // GeoIP
   geoip_enabled: boolean
-  geoip_database_path: string
   geoip_auto_update_enabled: boolean
   geoip_auto_update_interval: string
 

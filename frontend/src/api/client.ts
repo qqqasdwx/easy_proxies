@@ -121,29 +121,11 @@ interface RawSettings {
     listen?: string
     probe_target?: string
   }
-  subscription_refresh?: {
-    enabled?: boolean
-    interval?: string
-    timeout?: string
-    health_check_timeout?: string
-    drain_timeout?: string
-    min_available_nodes?: number
-  }
   geoip?: {
     enabled?: boolean
-    database_path?: string
     auto_update_enabled?: boolean
     auto_update_interval?: string
   }
-}
-
-interface SubscriptionConfigResponse {
-  enabled?: boolean
-  interval?: string
-  timeout?: string
-  health_check_timeout?: string
-  drain_timeout?: string
-  min_available_nodes?: number
 }
 
 // ---- Auth API ----
@@ -337,13 +319,7 @@ export async function fetchLogs(): Promise<LogsResponse> {
 
 export async function fetchSettings(): Promise<SettingsData> {
   const raw = await request<RawSettings>('/api/settings')
-  let sub: SubscriptionConfigResponse = {}
-  try {
-    sub = await request<SubscriptionConfigResponse>('/api/subscription/config')
-  } catch {
-    // Older or partially configured backends may not expose subscription config.
-  }
-  return normalizeSettings(raw, sub)
+  return normalizeSettings(raw)
 }
 
 export async function updateSettings(settings: SettingsData): Promise<SettingsUpdateResponse> {
@@ -381,32 +357,23 @@ export async function updateSettings(settings: SettingsData): Promise<SettingsUp
       },
       geoip: {
         enabled: settings.geoip_enabled,
-        database_path: settings.geoip_database_path,
         auto_update_enabled: settings.geoip_auto_update_enabled,
         auto_update_interval: settings.geoip_auto_update_interval,
       },
     }),
   })
 
-  const sub = await request<{ message?: string }>('/api/subscription/config', {
-    method: 'PUT',
-    body: JSON.stringify({
-      enabled: settings.sub_refresh_enabled,
-      interval: settings.sub_refresh_interval,
-      timeout: settings.sub_refresh_timeout,
-      health_check_timeout: settings.sub_refresh_health_check_timeout,
-      drain_timeout: settings.sub_refresh_drain_timeout,
-      min_available_nodes: settings.sub_refresh_min_available_nodes,
-    }),
-  })
-
   return {
-    message: sub.message || core.message || '设置已保存',
+    message: core.message || '设置已保存',
     need_reload: true,
   }
 }
 
-function normalizeSettings(raw: RawSettings, sub: SubscriptionConfigResponse): SettingsData {
+export async function refreshGeoIPDatabase(): Promise<{ message: string; path?: string; need_reload?: boolean }> {
+  return request('/api/geoip/refresh', { method: 'POST' })
+}
+
+function normalizeSettings(raw: RawSettings): SettingsData {
   return {
     mode: raw.mode || 'pool',
     log_level: raw.log_level || 'info',
@@ -434,18 +401,8 @@ function normalizeSettings(raw: RawSettings, sub: SubscriptionConfigResponse): S
     management_probe_target: raw.management?.probe_target || raw.probe_target || '',
     management_health_check_interval: '5m0s',
 
-    sub_refresh_enabled: sub.enabled ?? raw.subscription_refresh?.enabled ?? false,
-    sub_refresh_interval: sub.interval || raw.subscription_refresh?.interval || '1h0m0s',
-    sub_refresh_timeout: sub.timeout || raw.subscription_refresh?.timeout || '30s',
-    sub_refresh_health_check_timeout:
-      sub.health_check_timeout || raw.subscription_refresh?.health_check_timeout || '30s',
-    sub_refresh_drain_timeout: sub.drain_timeout || raw.subscription_refresh?.drain_timeout || '30s',
-    sub_refresh_min_available_nodes:
-      sub.min_available_nodes || raw.subscription_refresh?.min_available_nodes || 1,
-
     geoip_enabled: raw.geoip?.enabled || false,
-    geoip_database_path: raw.geoip?.database_path || './GeoLite2-Country.mmdb',
-    geoip_auto_update_enabled: raw.geoip?.auto_update_enabled ?? true,
+    geoip_auto_update_enabled: raw.geoip?.auto_update_enabled ?? false,
     geoip_auto_update_interval: raw.geoip?.auto_update_interval || '24h0m0s',
 
   }
@@ -515,10 +472,6 @@ export async function triggerReload(): Promise<{ message: string }> {
 
 export async function fetchSubscriptionStatus(): Promise<SubscriptionStatus> {
   return request<SubscriptionStatus>('/api/subscription/status')
-}
-
-export async function refreshSubscription(): Promise<{ message: string; node_count: number }> {
-  return request('/api/subscription/refresh', { method: 'POST' })
 }
 
 export async function fetchSubscriptions(): Promise<{ subscriptions: SubscriptionSource[] }> {

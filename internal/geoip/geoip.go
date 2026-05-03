@@ -2,9 +2,9 @@ package geoip
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
-	"context"
 	"fmt"
 	"io"
 	"log"
@@ -151,6 +151,37 @@ func EnsureDatabase(dbPath string) error {
 	cleanup = false
 
 	log.Printf("✅ GeoIP database downloaded successfully to %s", dbPath)
+	return nil
+}
+
+// RefreshDatabase forces a fresh download and atomically replaces the database.
+func RefreshDatabase(dbPath string) error {
+	dbPath = strings.TrimSpace(dbPath)
+	if dbPath == "" {
+		return fmt.Errorf("geoip database path is empty")
+	}
+
+	dir := filepath.Dir(dbPath)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create directory: %w", err)
+		}
+	}
+
+	tempPath := dbPath + ".refresh"
+	if err := downloadDatabase(tempPath); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer os.Remove(tempPath)
+
+	if err := validateMMDB(tempPath); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+	if err := os.Rename(tempPath, dbPath); err != nil {
+		return fmt.Errorf("replace database: %w", err)
+	}
+	log.Printf("✅ GeoIP database refreshed successfully at %s", dbPath)
 	return nil
 }
 

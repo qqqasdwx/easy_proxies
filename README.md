@@ -98,7 +98,6 @@ When GeoIP is enabled, Easy Proxies automatically classifies your proxy nodes by
 ```yaml
 geoip:
   enabled: true
-  database_path: "./GeoLite2-Country.mmdb"
   listen: "0.0.0.0"          # defaults to listener.address if omitted
   port: 1221                  # defaults to listener.port if omitted
   auto_update_enabled: true   # auto-update the GeoIP database
@@ -108,6 +107,7 @@ geoip:
 The GeoIP router reuses the `listener.username` and `listener.password` for proxy authentication.
 
 Key behaviors:
+- The database path is managed by the app: `/app/data` in Docker, `./data` otherwise
 - The GeoIP database (MaxMind GeoLite2-Country) is **auto-downloaded** on first startup
 - Auto-update is enabled by default (checks every 24h) with hot-reload -- no restart needed
 - Node region classification happens automatically during startup and on every reload
@@ -265,6 +265,7 @@ Set `MANAGEMENT_PASSWORD` to require login. The management password is never sto
 | `/api/subscriptions/{id}` | PUT, DELETE | Update/delete one subscription source |
 | `/api/subscriptions/{id}/refresh` | POST | Refresh one subscription source |
 | `/api/subscription/status` | GET | Check aggregate subscription status |
+| `/api/geoip/refresh` | POST | Force-refresh the GeoIP database |
 | `/api/nodes/config` | GET, POST | List/create node config |
 | `/api/nodes/config/{name}` | PUT, DELETE, PATCH | Update/delete/toggle one node |
 | `/api/nodes/config/batch-toggle` | POST | Batch enable/disable nodes |

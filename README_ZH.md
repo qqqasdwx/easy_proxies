@@ -146,6 +146,7 @@ docker compose up -d
 - `PUT|DELETE /api/subscriptions/{id}`
 - `POST /api/subscriptions/{id}/refresh`
 - `GET /api/subscription/status`
+- `POST /api/geoip/refresh`
 - `GET|POST /api/nodes/config`
 - `PUT|DELETE|PATCH /api/nodes/config/{name}`
 - `POST /api/nodes/config/batch-toggle`

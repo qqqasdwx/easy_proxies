@@ -108,24 +108,38 @@ func New(cfg *config.Config, boxMgr *boxmgr.Manager, opts ...Option) *Manager {
 
 // Start begins the periodic refresh loop.
 func (m *Manager) Start() {
-	if !m.baseCfg.SubscriptionRefresh.Enabled {
-		m.logger.Infof("subscription refresh disabled")
+	m.ReloadSchedule()
+}
+
+// ReloadSchedule restarts automatic refresh scheduling from subscription sources.
+func (m *Manager) ReloadSchedule() {
+	if m == nil {
 		return
 	}
-	sources, err := m.subscriptionSources()
+	if m.cancel != nil {
+		m.cancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.ctx = ctx
+	m.cancel = cancel
+	m.manualRefresh = make(chan struct{}, 1)
+	m.mu.Unlock()
+
+	sources, err := m.autoUpdateSources()
 	if err != nil {
-		m.logger.Warnf("failed to load subscription sources: %v", err)
+		m.logger.Warnf("failed to load auto-update subscription sources: %v", err)
 		return
 	}
 	if len(sources) == 0 {
-		m.logger.Infof("no subscriptions configured, refresh disabled")
+		m.logger.Infof("no auto-update subscriptions configured")
+		m.syncNextRefreshStatus()
 		return
 	}
 
-	interval := m.baseCfg.SubscriptionRefresh.Interval
-	m.logger.Infof("starting subscription refresh, interval: %s", interval)
-
-	go m.refreshLoop(interval)
+	m.logger.Infof("starting subscription auto refresh for %d sources", len(sources))
+	m.syncNextRefreshStatus()
+	go m.refreshLoop(ctx)
 }
 
 // RefreshSource refreshes one subscription source and reloads the proxy config.
@@ -143,6 +157,10 @@ func (m *Manager) RefreshSource(id int64) error {
 	if strings.TrimSpace(source.URL) == "" {
 		return fmt.Errorf("subscription source %d has empty url", id)
 	}
+	if !m.refreshMu.TryLock() {
+		return fmt.Errorf("subscription refresh already in progress")
+	}
+	defer m.refreshMu.Unlock()
 
 	timeout := m.baseCfg.SubscriptionRefresh.Timeout
 	if timeout <= 0 {
@@ -191,141 +209,18 @@ func (m *Manager) Stop() {
 	}
 }
 
-// UpdateConfig hot-reloads subscription URLs and refresh settings without restart.
-func (m *Manager) UpdateConfig(urls []string, enabled bool, interval time.Duration) {
-	m.mu.Lock()
-	m.urls = append(m.urls[:0], urls...)
-	m.baseCfg.SubscriptionRefresh.Enabled = enabled
-	if interval > 0 {
-		m.baseCfg.SubscriptionRefresh.Interval = interval
-	}
-	m.mu.Unlock()
-
-	if m.store != nil {
-		sources := make([]store.SubscriptionSource, 0, len(urls))
-		for idx, u := range urls {
-			sources = append(sources, store.SubscriptionSource{
-				Name:       fmt.Sprintf("subscription-%d", idx+1),
-				URL:        u,
-				Enabled:    true,
-				AutoUpdate: enabled,
-				Interval:   interval,
-			})
-		}
-		if err := m.store.ReplaceSubscriptionSources(context.Background(), sources); err != nil {
-			m.logger.Errorf("failed to save subscription sources: %v", err)
-		}
-		if err := config.SaveRuntime(context.Background(), m.store, m.baseCfg); err != nil {
-			m.logger.Errorf("failed to save runtime config: %v", err)
-		}
-	}
-
-	// Restart the refresh loop with new settings
-	if m.cancel != nil {
-		m.cancel()
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	m.mu.Lock()
-	m.ctx = ctx
-	m.cancel = cancel
-	m.manualRefresh = make(chan struct{}, 1)
-	m.mu.Unlock()
-
-	if len(urls) == 0 {
-		m.logger.Infof("no subscription URLs configured, skipping refresh")
-		return
-	}
-
-	// Always start the refresh loop to handle the immediate refresh signal
-	m.logger.Infof("subscription config updated: %d URLs, enabled=%v, interval=%s", len(urls), enabled, m.baseCfg.SubscriptionRefresh.Interval)
-	go m.refreshLoop(m.baseCfg.SubscriptionRefresh.Interval)
-
-	// Always trigger an immediate fetch when URLs are provided,
-	// regardless of the "enabled" flag (which only controls periodic auto-refresh)
-	select {
-	case m.manualRefresh <- struct{}{}:
-		m.logger.Infof("triggered immediate refresh after config update")
-	default:
-		// A refresh is already pending
-	}
-}
-
-// UpdateConfigAndRefresh updates subscription config and synchronously waits for
-// the first refresh to complete before returning. This ensures the caller (WebUI API)
-// can confirm the update took effect.
-func (m *Manager) UpdateConfigAndRefresh(urls []string, enabled bool, interval time.Duration) error {
-	m.UpdateConfig(urls, enabled, interval)
-
-	if len(urls) == 0 {
-		return nil
-	}
-
-	// Wait for the refresh triggered by UpdateConfig to complete
-	timeout := m.baseCfg.SubscriptionRefresh.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	deadline := timeout + m.baseCfg.SubscriptionRefresh.HealthCheckTimeout
-
-	ctx, cancel := context.WithTimeout(m.ctx, deadline)
-	defer cancel()
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	startCount := m.Status().RefreshCount
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("刷新超时")
-		case <-ticker.C:
-			status := m.Status()
-			if status.RefreshCount > startCount {
-				if status.LastError != "" {
-					return fmt.Errorf("刷新失败: %s", status.LastError)
-				}
-				return nil
-			}
-		}
-	}
-}
-
 // RefreshNow triggers an immediate refresh.
 func (m *Manager) RefreshNow() error {
-	select {
-	case m.manualRefresh <- struct{}{}:
-	default:
-		// Already a refresh pending
-	}
-
-	// Wait for refresh to complete or timeout
-	timeout := m.baseCfg.SubscriptionRefresh.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-
-	ctx, cancel := context.WithTimeout(m.ctx, timeout+m.baseCfg.SubscriptionRefresh.HealthCheckTimeout)
-	defer cancel()
-
-	// Poll status until refresh completes
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
 	startCount := m.Status().RefreshCount
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("refresh timeout")
-		case <-ticker.C:
-			status := m.Status()
-			if status.RefreshCount > startCount {
-				if status.LastError != "" {
-					return fmt.Errorf("refresh failed: %s", status.LastError)
-				}
-				return nil
-			}
-		}
+	m.doRefresh()
+	status := m.Status()
+	if status.RefreshCount == startCount {
+		return fmt.Errorf("subscription refresh already in progress")
 	}
+	if status.LastError != "" {
+		return fmt.Errorf("refresh failed: %s", status.LastError)
+	}
+	return nil
 }
 
 // Status returns the current refresh status.
@@ -336,44 +231,71 @@ func (m *Manager) Status() monitor.SubscriptionStatus {
 	return status
 }
 
-// refreshLoop runs the periodic refresh.
-func (m *Manager) refreshLoop(interval time.Duration) {
+func (m *Manager) refreshDueSubscriptions() {
+	sources, err := m.autoUpdateSources()
+	if err != nil {
+		m.logger.Warnf("failed to load auto-update subscription sources: %v", err)
+		return
+	}
+	if len(sources) == 0 {
+		m.syncNextRefreshStatus()
+		return
+	}
+
+	now := time.Now()
+	for _, source := range sources {
+		if !source.NextRefresh.IsZero() && source.NextRefresh.After(now) {
+			continue
+		}
+		if err := m.RefreshSource(source.ID); err != nil {
+			m.logger.Warnf("auto refresh subscription %d failed: %v", source.ID, err)
+		}
+	}
+	m.syncNextRefreshStatus()
+}
+
+func (m *Manager) syncNextRefreshStatus() {
+	sources, err := m.autoUpdateSources()
+	if err != nil {
+		return
+	}
+	var next time.Time
+	for _, source := range sources {
+		if source.NextRefresh.IsZero() {
+			next = time.Now()
+			break
+		}
+		if next.IsZero() || source.NextRefresh.Before(next) {
+			next = source.NextRefresh
+		}
+	}
+	m.mu.Lock()
+	m.status.NextRefresh = next
+	status := m.status
+	hash := m.nodesHash
+	m.mu.Unlock()
+	m.persistStatus(context.Background(), status, hash)
+}
+
+// refreshLoop runs per-source automatic refresh checks.
+func (m *Manager) refreshLoop(ctx context.Context) {
 	m.mu.RLock()
-	autoEnabled := m.baseCfg.SubscriptionRefresh.Enabled
+	manualRefresh := m.manualRefresh
 	m.mu.RUnlock()
 
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	if autoEnabled {
-		// Update next refresh time only when auto-refresh is enabled
-		m.mu.Lock()
-		m.status.NextRefresh = time.Now().Add(interval)
-		m.mu.Unlock()
-	}
+	m.refreshDueSubscriptions()
 
 	for {
 		select {
-		case <-m.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Only do periodic refresh when auto-refresh is enabled
-			if !autoEnabled {
-				continue
-			}
+			m.refreshDueSubscriptions()
+		case <-manualRefresh:
 			m.doRefresh()
-			m.mu.Lock()
-			m.status.NextRefresh = time.Now().Add(interval)
-			m.mu.Unlock()
-		case <-m.manualRefresh:
-			// Always honor manual/immediate refresh regardless of enabled flag
-			m.doRefresh()
-			if autoEnabled {
-				ticker.Reset(interval)
-				m.mu.Lock()
-				m.status.NextRefresh = time.Now().Add(interval)
-				m.mu.Unlock()
-			}
 		}
 	}
 }
@@ -666,6 +588,27 @@ func (m *Manager) subscriptionSources() ([]store.SubscriptionSource, error) {
 		if source.Enabled && source.URL != "" {
 			filtered = append(filtered, source)
 		}
+	}
+	return filtered, nil
+}
+
+func (m *Manager) autoUpdateSources() ([]store.SubscriptionSource, error) {
+	sources, err := m.subscriptionSources()
+	if err != nil {
+		return nil, err
+	}
+	filtered := sources[:0]
+	for _, source := range sources {
+		if !source.AutoUpdate || strings.TrimSpace(source.URL) == "" {
+			continue
+		}
+		if source.Interval <= 0 {
+			source.Interval = m.baseCfg.SubscriptionRefresh.Interval
+			if source.Interval <= 0 {
+				source.Interval = time.Hour
+			}
+		}
+		filtered = append(filtered, source)
 	}
 	return filtered, nil
 }

@@ -51,9 +51,8 @@ var (
 type SubscriptionRefresher interface {
 	RefreshNow() error
 	RefreshSource(id int64) error
+	ReloadSchedule()
 	Status() SubscriptionStatus
-	UpdateConfig(urls []string, enabled bool, interval time.Duration)
-	UpdateConfigAndRefresh(urls []string, enabled bool, interval time.Duration) error
 }
 
 // SubscriptionStatus represents subscription refresh status.
@@ -129,9 +128,9 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/import", s.withAuth(s.handleImport))
 	mux.HandleFunc("/api/subscription/status", s.withAuth(s.handleSubscriptionStatus))
 	mux.HandleFunc("/api/subscription/refresh", s.withAuth(s.handleSubscriptionRefresh))
-	mux.HandleFunc("/api/subscription/config", s.withAuth(s.handleSubscriptionConfig))
 	mux.HandleFunc("/api/subscriptions", s.withAuth(s.handleSubscriptions))
 	mux.HandleFunc("/api/subscriptions/", s.withAuth(s.handleSubscriptionItem))
+	mux.HandleFunc("/api/geoip/refresh", s.withAuth(s.handleGeoIPRefresh))
 	mux.HandleFunc("/api/reload", s.withAuth(s.handleReload))
 	mux.HandleFunc("/api/traffic", s.withAuth(s.handleTraffic))
 	mux.HandleFunc("/api/logs", s.withAuth(s.handleLogs))
@@ -211,11 +210,11 @@ func (s *Server) updateSettings(externalIP, probeTarget string, skipCertVerify b
 	s.cfgSrc.Management.ProbeTarget = probeTarget
 	s.cfgSrc.SkipCertVerify = skipCertVerify
 
-	// GeoIP settings
 	s.cfgSrc.GeoIP.Enabled = geoipEnabled
-	if geoipEnabled && s.cfgSrc.GeoIP.DatabasePath == "" {
-		s.cfgSrc.GeoIP.DatabasePath = "./GeoLite2-Country.mmdb"
-		s.cfgSrc.GeoIP.AutoUpdateEnabled = true
+	if geoipEnabled {
+		s.cfgSrc.GeoIP.DatabasePath = config.DefaultGeoIPDatabasePath()
+	}
+	if s.cfgSrc.GeoIP.AutoUpdateInterval <= 0 {
 		s.cfgSrc.GeoIP.AutoUpdateInterval = 24 * time.Hour
 	}
 
@@ -588,18 +587,6 @@ func parseDurationOr(value string, fallback time.Duration) time.Duration {
 	return d
 }
 
-func sameStringSlice(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 // withAuth 认证中间件，如果配置了密码则需要验证
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -967,7 +954,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			},
 			"geoip": map[string]any{
 				"enabled":              false,
-				"database_path":        "",
 				"listen":               "",
 				"port":                 0,
 				"auto_update_enabled":  false,
@@ -1001,17 +987,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"listen":       cfg.Management.Listen,
 				"probe_target": cfg.Management.ProbeTarget,
 			}
-			resp["subscription_refresh"] = map[string]any{
-				"enabled":              cfg.SubscriptionRefresh.Enabled,
-				"interval":             cfg.SubscriptionRefresh.Interval.String(),
-				"timeout":              cfg.SubscriptionRefresh.Timeout.String(),
-				"health_check_timeout": cfg.SubscriptionRefresh.HealthCheckTimeout.String(),
-				"drain_timeout":        cfg.SubscriptionRefresh.DrainTimeout.String(),
-				"min_available_nodes":  cfg.SubscriptionRefresh.MinAvailableNodes,
-			}
 			resp["geoip"] = map[string]any{
 				"enabled":              cfg.GeoIP.Enabled,
-				"database_path":        cfg.GeoIP.DatabasePath,
 				"listen":               cfg.GeoIP.Listen,
 				"port":                 cfg.GeoIP.Port,
 				"auto_update_enabled":  cfg.GeoIP.AutoUpdateEnabled,
@@ -1059,7 +1036,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			} `json:"log"`
 			GeoIP *struct {
 				Enabled            bool   `json:"enabled"`
-				DatabasePath       string `json:"database_path"`
 				Listen             string `json:"listen"`
 				Port               uint16 `json:"port"`
 				AutoUpdateEnabled  bool   `json:"auto_update_enabled"`
@@ -1159,7 +1135,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if req.GeoIP != nil {
-				s.cfgSrc.GeoIP.DatabasePath = req.GeoIP.DatabasePath
+				s.cfgSrc.GeoIP.DatabasePath = config.DefaultGeoIPDatabasePath()
 				s.cfgSrc.GeoIP.Listen = req.GeoIP.Listen
 				s.cfgSrc.GeoIP.Port = req.GeoIP.Port
 				s.cfgSrc.GeoIP.AutoUpdateEnabled = req.GeoIP.AutoUpdateEnabled
@@ -1257,194 +1233,6 @@ func (s *Server) handleSubscriptionRefresh(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// handleSubscriptionConfig handles GET/PUT for subscription configuration.
-func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.cfgMu.RLock()
-		var urls []string
-		var enabled bool
-		var interval string
-		var timeout string
-		var healthCheckTimeout string
-		var drainTimeout string
-		var minAvailableNodes int
-		if s.cfgSrc != nil {
-			enabled = s.cfgSrc.SubscriptionRefresh.Enabled
-			interval = s.cfgSrc.SubscriptionRefresh.Interval.String()
-			timeout = s.cfgSrc.SubscriptionRefresh.Timeout.String()
-			healthCheckTimeout = s.cfgSrc.SubscriptionRefresh.HealthCheckTimeout.String()
-			drainTimeout = s.cfgSrc.SubscriptionRefresh.DrainTimeout.String()
-			minAvailableNodes = s.cfgSrc.SubscriptionRefresh.MinAvailableNodes
-		}
-		s.cfgMu.RUnlock()
-		if s.store != nil {
-			if sources, err := s.store.ListSubscriptionSources(r.Context()); err == nil {
-				for _, source := range sources {
-					if source.Enabled && source.URL != "" {
-						urls = append(urls, source.URL)
-					}
-				}
-			}
-		}
-		writeJSON(w, map[string]any{
-			"subscriptions":         urls,
-			"enabled":               enabled,
-			"interval":              interval,
-			"timeout":               timeout,
-			"health_check_timeout":  healthCheckTimeout,
-			"drain_timeout":         drainTimeout,
-			"min_available_nodes":   minAvailableNodes,
-			"has_subscriptions":     len(urls) > 0,
-			"subscription_count":    len(urls),
-			"auto_refresh_enabled":  enabled,
-			"auto_refresh_interval": interval,
-		})
-
-	case http.MethodPut:
-		var req struct {
-			URLs                *[]string `json:"subscriptions,omitempty"`
-			Enabled             bool      `json:"enabled"`
-			Interval            string    `json:"interval"` // e.g. "1h", "30m"
-			Timeout             string    `json:"timeout"`
-			HealthCheckTimeout  string    `json:"health_check_timeout"`
-			DrainTimeout        string    `json:"drain_timeout"`
-			MinAvailableNodes   int       `json:"min_available_nodes"`
-			AutoRefreshEnabled  *bool     `json:"auto_refresh_enabled,omitempty"`
-			AutoRefreshInterval string    `json:"auto_refresh_interval,omitempty"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			writeJSON(w, map[string]any{"error": "请求格式错误"})
-			return
-		}
-
-		// Parse interval
-		intervalValue := req.Interval
-		if intervalValue == "" {
-			intervalValue = req.AutoRefreshInterval
-		}
-		interval, err := time.ParseDuration(intervalValue)
-		if err != nil || interval < 5*time.Minute {
-			interval = 1 * time.Hour // default
-		}
-		enabled := req.Enabled
-		if req.AutoRefreshEnabled != nil {
-			enabled = *req.AutoRefreshEnabled
-		}
-		timeout := parseDurationOr(req.Timeout, 30*time.Second)
-		healthCheckTimeout := parseDurationOr(req.HealthCheckTimeout, 30*time.Second)
-		drainTimeout := parseDurationOr(req.DrainTimeout, 30*time.Second)
-
-		// Clean URLs
-		var cleanURLs []string
-		if req.URLs != nil {
-			for _, u := range *req.URLs {
-				u = strings.TrimSpace(u)
-				if u != "" {
-					cleanURLs = append(cleanURLs, u)
-				}
-			}
-		}
-
-		if s.store == nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			writeJSON(w, map[string]any{"error": "数据库存储未初始化"})
-			return
-		}
-		var currentURLs []string
-		sources, err := s.store.ListSubscriptionSources(r.Context())
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			writeJSON(w, map[string]any{"error": fmt.Sprintf("读取订阅失败: %v", err)})
-			return
-		}
-		for _, source := range sources {
-			if source.Enabled && source.URL != "" {
-				currentURLs = append(currentURLs, source.URL)
-			}
-		}
-
-		// Update in-memory config and persist to SQLite
-		s.cfgMu.Lock()
-		var refreshNeeded bool
-		if s.cfgSrc != nil {
-			refreshNeeded = (req.URLs != nil && !sameStringSlice(currentURLs, cleanURLs)) ||
-				s.cfgSrc.SubscriptionRefresh.Enabled != enabled ||
-				s.cfgSrc.SubscriptionRefresh.Interval != interval
-			s.cfgSrc.SubscriptionRefresh.Enabled = enabled
-			s.cfgSrc.SubscriptionRefresh.Interval = interval
-			s.cfgSrc.SubscriptionRefresh.Timeout = timeout
-			s.cfgSrc.SubscriptionRefresh.HealthCheckTimeout = healthCheckTimeout
-			s.cfgSrc.SubscriptionRefresh.DrainTimeout = drainTimeout
-			if req.MinAvailableNodes > 0 {
-				s.cfgSrc.SubscriptionRefresh.MinAvailableNodes = req.MinAvailableNodes
-			}
-			if req.URLs != nil {
-				nextSources := make([]store.SubscriptionSource, 0, len(cleanURLs))
-				for idx, u := range cleanURLs {
-					nextSources = append(nextSources, store.SubscriptionSource{
-						Name:       fmt.Sprintf("subscription-%d", idx+1),
-						URL:        u,
-						Enabled:    true,
-						AutoUpdate: enabled,
-						Interval:   interval,
-					})
-				}
-				if err := s.store.ReplaceSubscriptionSources(r.Context(), nextSources); err != nil {
-					s.cfgMu.Unlock()
-					w.WriteHeader(http.StatusInternalServerError)
-					writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
-					return
-				}
-			}
-			if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {
-				s.cfgMu.Unlock()
-				w.WriteHeader(http.StatusInternalServerError)
-				writeJSON(w, map[string]any{"error": fmt.Sprintf("保存配置失败: %v", err)})
-				return
-			}
-		}
-		s.cfgMu.Unlock()
-
-		// Hot-reload subscription manager and wait for refresh to complete
-		if s.subRefresher != nil && refreshNeeded {
-			if err := s.subRefresher.UpdateConfigAndRefresh(cleanURLs, enabled, interval); err != nil {
-				// Config was saved but refresh failed — report partial success
-				writeJSON(w, map[string]any{
-					"message":       fmt.Sprintf("订阅配置已保存，但刷新失败: %v", err),
-					"subscriptions": cleanURLs,
-					"enabled":       enabled,
-					"interval":      interval.String(),
-					"refresh_error": err.Error(),
-				})
-				return
-			}
-		} else if s.subRefresher == nil || !refreshNeeded {
-			writeJSON(w, map[string]any{
-				"message":       "订阅配置已保存",
-				"subscriptions": cleanURLs,
-				"enabled":       enabled,
-				"interval":      interval.String(),
-				"node_count":    len(cleanURLs),
-			})
-			return
-		}
-
-		status := s.subRefresher.Status()
-		writeJSON(w, map[string]any{
-			"message":       "订阅配置已更新并生效",
-			"subscriptions": cleanURLs,
-			"enabled":       enabled,
-			"interval":      interval.String(),
-			"node_count":    status.NodeCount,
-		})
-
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}
-}
-
 type subscriptionSourcePayload struct {
 	Name       string `json:"name"`
 	URL        string `json:"url"`
@@ -1491,6 +1279,9 @@ func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
 			return
+		}
+		if s.subRefresher != nil {
+			s.subRefresher.ReloadSchedule()
 		}
 		writeJSON(w, map[string]any{"subscription": subscriptionSourceResponse(source), "message": "订阅已添加"})
 	default:
@@ -1563,6 +1354,9 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 		if current.URL != next.URL {
 			_ = s.deleteSubscriptionNodes(r.Context(), id)
 		}
+		if s.subRefresher != nil {
+			s.subRefresher.ReloadSchedule()
+		}
 		writeJSON(w, map[string]any{"subscription": subscriptionSourceResponse(next), "message": "订阅已保存"})
 
 	case action == "" && r.Method == http.MethodDelete:
@@ -1575,6 +1369,9 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]any{"error": fmt.Sprintf("删除订阅节点失败: %v", err)})
 			return
+		}
+		if s.subRefresher != nil {
+			s.subRefresher.ReloadSchedule()
 		}
 		if s.nodeMgr != nil {
 			_ = s.nodeMgr.TriggerReload(r.Context())
@@ -1605,9 +1402,15 @@ func parseSubscriptionItemPath(path string) (int64, string, bool) {
 
 func sourceFromPayload(payload subscriptionSourcePayload, current *store.SubscriptionSource) (store.SubscriptionSource, error) {
 	source := store.SubscriptionSource{Enabled: true, AutoUpdate: true, Interval: time.Hour}
+	changed := current == nil
 	if current != nil {
 		source = *current
 	}
+	previousURL := source.URL
+	previousEnabled := source.Enabled
+	previousAutoUpdate := source.AutoUpdate
+	previousInterval := source.Interval
+
 	source.Name = strings.TrimSpace(payload.Name)
 	source.URL = strings.TrimSpace(payload.URL)
 	if source.URL == "" {
@@ -1625,6 +1428,16 @@ func sourceFromPayload(payload subscriptionSourcePayload, current *store.Subscri
 			return source, errors.New("刷新间隔格式错误，最小 1 分钟")
 		}
 		source.Interval = interval
+	}
+	changed = changed ||
+		previousURL != source.URL ||
+		previousEnabled != source.Enabled ||
+		previousAutoUpdate != source.AutoUpdate ||
+		previousInterval != source.Interval
+	if !source.Enabled || !source.AutoUpdate {
+		source.NextRefresh = time.Time{}
+	} else if changed {
+		source.NextRefresh = time.Now()
 	}
 	return source, nil
 }
@@ -1934,6 +1747,47 @@ func (s *Server) handleConfigNodesBatchDelete(w http.ResponseWriter, r *http.Req
 		result["errors"] = errs
 	}
 	writeJSON(w, result)
+}
+
+// handleGeoIPRefresh forces a GeoIP database download.
+func (s *Server) handleGeoIPRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.cfgMu.Lock()
+	if s.cfgSrc == nil {
+		s.cfgMu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+		writeJSON(w, map[string]any{"error": "配置存储未初始化"})
+		return
+	}
+	dbPath := config.DefaultGeoIPDatabasePath()
+	changed := strings.TrimSpace(s.cfgSrc.GeoIP.DatabasePath) != dbPath
+	s.cfgSrc.GeoIP.DatabasePath = dbPath
+	geoIPEnabled := s.cfgSrc.GeoIP.Enabled
+	if changed && s.store != nil {
+		if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {
+			s.cfgMu.Unlock()
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存 GeoIP 配置失败: %v", err)})
+			return
+		}
+	}
+	s.cfgMu.Unlock()
+
+	if err := geoip.RefreshDatabase(dbPath); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		writeJSON(w, map[string]any{"error": fmt.Sprintf("刷新 GeoIP 数据库失败: %v", err)})
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"message":     "GeoIP 数据库已重新下载",
+		"path":        dbPath,
+		"need_reload": geoIPEnabled,
+	})
 }
 
 // handleReload triggers a configuration reload.

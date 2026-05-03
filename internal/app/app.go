@@ -85,22 +85,14 @@ func RunWithStore(ctx context.Context, cfg *config.Config, dataStore store.Store
 		server.SetConfig(cfg)
 	}
 
-	// Always create SubscriptionManager so WebUI can hot-reload subscription config
+	// Always create SubscriptionManager so WebUI subscription settings can schedule refreshes.
 	var subOpts []subscription.Option
 	if dataStore != nil {
 		subOpts = append(subOpts, subscription.WithStore(dataStore))
 	}
 	subMgr := subscription.New(cfg, boxMgr, subOpts...)
 	defer subMgr.Stop()
-
-	if cfg.SubscriptionRefresh.Enabled {
-		configured, err := hasActiveSubscriptionSources(ctx, dataStore)
-		if err != nil {
-			log.Printf("⚠️  Failed to inspect subscription sources: %v", err)
-		} else if configured {
-			subMgr.Start()
-		}
-	}
+	subMgr.Start()
 
 	// Wire up subscription manager to monitor server for API endpoints
 	if server := boxMgr.MonitorServer(); server != nil {
@@ -195,25 +187,6 @@ func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store)
 	}
 	cfg.Nodes = filtered
 	return nil
-}
-
-func hasActiveSubscriptionSources(ctx context.Context, s store.Store) (bool, error) {
-	if s == nil {
-		return false, nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	sources, err := s.ListSubscriptionSources(ctx)
-	if err != nil {
-		return false, err
-	}
-	for _, source := range sources {
-		if source.Enabled && source.URL != "" {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func periodicStatsFlush(ctx context.Context, boxMgr *boxmgr.Manager) {
