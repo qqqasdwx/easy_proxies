@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,9 +78,6 @@ type Server struct {
 
 	sessionTTL time.Duration
 
-	// Concurrency control
-	probeSem *semaphore.Weighted
-
 	subRefresher SubscriptionRefresher
 	nodeMgr      NodeManager
 }
@@ -95,18 +91,11 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 		logger = log.Default()
 	}
 
-	// Calculate max concurrent probes
-	maxConcurrentProbes := int64(runtime.NumCPU() * 4)
-	if maxConcurrentProbes < 10 {
-		maxConcurrentProbes = 10
-	}
-
 	s := &Server{
 		cfg:        cfg,
 		mgr:        mgr,
 		logger:     logger,
 		sessionTTL: 24 * time.Hour,
-		probeSem:   semaphore.NewWeighted(maxConcurrentProbes),
 	}
 
 	// Start session cleanup goroutine
@@ -478,8 +467,15 @@ func (s *Server) handleProbeAll(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	probeTimeout, probeConcurrency := s.currentHealthCheckRuntime()
+	batches := (total + probeConcurrency - 1) / probeConcurrency
+	overallTimeout := time.Duration(batches+1) * probeTimeout
+	if overallTimeout < 2*time.Minute {
+		overallTimeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), overallTimeout)
 	defer cancel()
+	probeSem := semaphore.NewWeighted(int64(probeConcurrency))
 
 	// Probe all nodes with semaphore control
 	type probeResult struct {
@@ -498,7 +494,7 @@ func (s *Server) handleProbeAll(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 
 			// Acquire semaphore permit
-			if err := s.probeSem.Acquire(ctx, 1); err != nil {
+			if err := probeSem.Acquire(ctx, 1); err != nil {
 				results <- probeResult{
 					tag:  snap.Tag,
 					name: snap.Name,
@@ -506,10 +502,10 @@ func (s *Server) handleProbeAll(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-			defer s.probeSem.Release(1)
+			defer probeSem.Release(1)
 
 			// Execute probe
-			probeCtx, probeCancel := context.WithTimeout(ctx, 10*time.Second)
+			probeCtx, probeCancel := context.WithTimeout(ctx, probeTimeout)
 			defer probeCancel()
 
 			latency, err := s.mgr.Probe(probeCtx, snap.Tag)
@@ -591,6 +587,22 @@ func parseDurationOr(value string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+func (s *Server) currentHealthCheckRuntime() (time.Duration, int) {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	timeout := 10 * time.Second
+	concurrency := 8
+	if s.cfgSrc != nil {
+		if s.cfgSrc.HealthCheck.Timeout > 0 {
+			timeout = s.cfgSrc.HealthCheck.Timeout
+		}
+		if s.cfgSrc.HealthCheck.Concurrency > 0 {
+			concurrency = s.cfgSrc.HealthCheck.Concurrency
+		}
+	}
+	return timeout, concurrency
 }
 
 // withAuth 认证中间件，如果配置了密码则需要验证
@@ -985,12 +997,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"auto_update_enabled":  false,
 				"auto_update_interval": "",
 			},
-			"subscription_refresh": map[string]any{
-				"timeout":              "",
-				"health_check_timeout": "",
-				"drain_timeout":        "",
-				"min_available_nodes":  1,
-			},
 			"health_check": map[string]any{
 				"interval":    "",
 				"timeout":     "",
@@ -1039,12 +1045,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"port":                 cfg.GeoIP.Port,
 				"auto_update_enabled":  cfg.GeoIP.AutoUpdateEnabled,
 				"auto_update_interval": cfg.GeoIP.AutoUpdateInterval.String(),
-			}
-			resp["subscription_refresh"] = map[string]any{
-				"timeout":              cfg.SubscriptionRefresh.Timeout.String(),
-				"health_check_timeout": cfg.SubscriptionRefresh.HealthCheckTimeout.String(),
-				"drain_timeout":        cfg.SubscriptionRefresh.DrainTimeout.String(),
-				"min_available_nodes":  cfg.SubscriptionRefresh.MinAvailableNodes,
 			}
 			resp["health_check"] = map[string]any{
 				"interval":    cfg.HealthCheck.Interval.String(),
@@ -1106,12 +1106,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				AutoUpdateEnabled  bool   `json:"auto_update_enabled"`
 				AutoUpdateInterval string `json:"auto_update_interval"`
 			} `json:"geoip"`
-			SubscriptionRefresh *struct {
-				Timeout            string `json:"timeout"`
-				HealthCheckTimeout string `json:"health_check_timeout"`
-				DrainTimeout       string `json:"drain_timeout"`
-				MinAvailableNodes  int    `json:"min_available_nodes"`
-			} `json:"subscription_refresh"`
 			HealthCheck *struct {
 				Interval    string `json:"interval"`
 				Timeout     string `json:"timeout"`
@@ -1240,40 +1234,30 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			if req.SubscriptionRefresh != nil {
-				if req.SubscriptionRefresh.Timeout != "" {
-					if d, err := time.ParseDuration(req.SubscriptionRefresh.Timeout); err == nil {
-						s.cfgSrc.SubscriptionRefresh.Timeout = d
-					}
-				}
-				if req.SubscriptionRefresh.HealthCheckTimeout != "" {
-					if d, err := time.ParseDuration(req.SubscriptionRefresh.HealthCheckTimeout); err == nil {
-						s.cfgSrc.SubscriptionRefresh.HealthCheckTimeout = d
-					}
-				}
-				if req.SubscriptionRefresh.DrainTimeout != "" {
-					if d, err := time.ParseDuration(req.SubscriptionRefresh.DrainTimeout); err == nil {
-						s.cfgSrc.SubscriptionRefresh.DrainTimeout = d
-					}
-				}
-				if req.SubscriptionRefresh.MinAvailableNodes > 0 {
-					s.cfgSrc.SubscriptionRefresh.MinAvailableNodes = req.SubscriptionRefresh.MinAvailableNodes
-				}
-			}
 			if req.HealthCheck != nil {
-				if req.HealthCheck.Interval != "" {
-					if d, err := time.ParseDuration(req.HealthCheck.Interval); err == nil {
-						s.cfgSrc.HealthCheck.Interval = d
-					}
+				interval, err := parsePositiveDuration(req.HealthCheck.Interval, "健康检查间隔")
+				if err != nil {
+					s.cfgMu.Unlock()
+					w.WriteHeader(http.StatusBadRequest)
+					writeJSON(w, map[string]any{"error": err.Error()})
+					return
 				}
-				if req.HealthCheck.Timeout != "" {
-					if d, err := time.ParseDuration(req.HealthCheck.Timeout); err == nil {
-						s.cfgSrc.HealthCheck.Timeout = d
-					}
+				timeout, err := parsePositiveDuration(req.HealthCheck.Timeout, "健康检查超时")
+				if err != nil {
+					s.cfgMu.Unlock()
+					w.WriteHeader(http.StatusBadRequest)
+					writeJSON(w, map[string]any{"error": err.Error()})
+					return
 				}
-				if req.HealthCheck.Concurrency > 0 {
-					s.cfgSrc.HealthCheck.Concurrency = req.HealthCheck.Concurrency
+				if req.HealthCheck.Concurrency <= 0 {
+					s.cfgMu.Unlock()
+					w.WriteHeader(http.StatusBadRequest)
+					writeJSON(w, map[string]any{"error": "健康检查并发数必须大于 0"})
+					return
 				}
+				s.cfgSrc.HealthCheck.Interval = interval
+				s.cfgSrc.HealthCheck.Timeout = timeout
+				s.cfgSrc.HealthCheck.Concurrency = req.HealthCheck.Concurrency
 			}
 			if err := s.cfgSrc.NormalizeWithPortMap(s.cfgSrc.BuildPortMap()); err != nil {
 				s.cfgMu.Unlock()
@@ -1288,6 +1272,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, map[string]any{"error": fmt.Sprintf("应用日志配置失败: %v", err)})
 					return
 				}
+			}
+			if req.HealthCheck != nil && s.mgr != nil {
+				s.mgr.StartPeriodicHealthCheck(
+					s.cfgSrc.HealthCheck.Interval,
+					s.cfgSrc.HealthCheck.Timeout,
+					s.cfgSrc.HealthCheck.Concurrency,
+				)
 			}
 			if s.store != nil {
 				if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {

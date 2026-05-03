@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -136,6 +135,8 @@ type Manager struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	logger     Logger
+	healthMu   sync.Mutex
+	healthStop context.CancelFunc
 }
 
 // Logger interface for logging
@@ -189,46 +190,61 @@ func (m *Manager) SetLogger(logger Logger) {
 	m.logger = logger
 }
 
-// StartPeriodicHealthCheck starts a background goroutine that periodically checks all nodes.
-// interval: how often to check (e.g., 30 * time.Second)
-// timeout: timeout for each probe (e.g., 10 * time.Second)
-func (m *Manager) StartPeriodicHealthCheck(interval, timeout time.Duration) {
+// StartPeriodicHealthCheck starts or restarts background health checks.
+func (m *Manager) StartPeriodicHealthCheck(interval, timeout time.Duration, concurrency int) {
 	if !m.probeReady {
 		if m.logger != nil {
 			m.logger.Warn("probe target not configured, periodic health check disabled")
 		}
 		return
 	}
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	if concurrency <= 0 {
+		concurrency = 8
+	}
+
+	m.healthMu.Lock()
+	if m.healthStop != nil {
+		m.healthStop()
+	}
+	healthCtx, stop := context.WithCancel(m.ctx)
+	m.healthStop = stop
+	m.healthMu.Unlock()
 
 	go func() {
 		// 启动后立即进行一次检查
-		m.probeAllNodes(timeout)
+		m.probeAllNodes(timeout, concurrency)
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
 		for {
 			select {
-			case <-m.ctx.Done():
+			case <-healthCtx.Done():
 				return
 			case <-ticker.C:
-				m.probeAllNodes(timeout)
+				m.probeAllNodes(timeout, concurrency)
 			}
 		}
 	}()
 
 	if m.logger != nil {
-		m.logger.Info("periodic health check started, interval: ", interval)
+		m.logger.Info("periodic health check started, interval: ", interval, ", timeout: ", timeout, ", concurrency: ", concurrency)
 	}
 }
 
 // ProbeAllNow triggers a one-time health check on all nodes (e.g. after reload).
-func (m *Manager) ProbeAllNow(timeout time.Duration) {
-	m.probeAllNodes(timeout)
+func (m *Manager) ProbeAllNow(timeout time.Duration, concurrency int) {
+	m.probeAllNodes(timeout, concurrency)
 }
 
 // probeAllNodes checks all registered nodes concurrently.
-func (m *Manager) probeAllNodes(timeout time.Duration) {
+func (m *Manager) probeAllNodes(timeout time.Duration, concurrency int) {
 	m.mu.RLock()
 	entries := make([]*entry, 0, len(m.nodes))
 	for _, e := range m.nodes {
@@ -244,8 +260,8 @@ func (m *Manager) probeAllNodes(timeout time.Duration) {
 		m.logger.Info("starting health check for ", len(entries), " nodes")
 	}
 
-	workerLimit := runtime.NumCPU() * 2
-	if workerLimit < 8 {
+	workerLimit := concurrency
+	if workerLimit <= 0 {
 		workerLimit = 8
 	}
 	sem := make(chan struct{}, workerLimit)
@@ -303,6 +319,12 @@ func (m *Manager) probeAllNodes(timeout time.Duration) {
 
 // Stop stops the periodic health check.
 func (m *Manager) Stop() {
+	m.healthMu.Lock()
+	if m.healthStop != nil {
+		m.healthStop()
+		m.healthStop = nil
+	}
+	m.healthMu.Unlock()
 	if m.cancel != nil {
 		m.cancel()
 	}

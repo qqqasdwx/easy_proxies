@@ -33,8 +33,6 @@ const (
 	defaultDrainTimeout       = 10 * time.Second
 	defaultHealthCheckTimeout = 30 * time.Second
 	healthCheckPollInterval   = 500 * time.Millisecond
-	periodicHealthInterval    = 5 * time.Minute
-	periodicHealthTimeout     = 10 * time.Second
 )
 
 // Logger defines logging interface for the manager.
@@ -73,8 +71,7 @@ type Manager struct {
 	minAvailableNodes int
 	logger            Logger
 
-	baseCtx            context.Context
-	healthCheckStarted bool
+	baseCtx context.Context
 }
 
 // New creates a BoxManager with the given config.
@@ -174,9 +171,12 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	// Start periodic health check after nodes are registered
 	m.mu.Lock()
-	if m.monitorMgr != nil && !m.healthCheckStarted {
-		m.monitorMgr.StartPeriodicHealthCheck(periodicHealthInterval, periodicHealthTimeout)
-		m.healthCheckStarted = true
+	if m.monitorMgr != nil {
+		m.monitorMgr.StartPeriodicHealthCheck(
+			healthCheckInterval(cfg),
+			healthCheckTimeout(cfg),
+			healthCheckConcurrency(cfg),
+		)
 	}
 	m.mu.Unlock()
 
@@ -304,9 +304,13 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 
 	m.restoreMonitorTrafficFromStore(ctx)
 
-	// Trigger initial health check for newly registered nodes
+	// Restart periodic health checks for newly registered nodes and current settings.
 	if m.monitorMgr != nil {
-		go m.monitorMgr.ProbeAllNow(periodicHealthTimeout)
+		m.monitorMgr.StartPeriodicHealthCheck(
+			healthCheckInterval(newCfg),
+			healthCheckTimeout(newCfg),
+			healthCheckConcurrency(newCfg),
+		)
 	}
 
 	m.logger.Infof("reload completed successfully with %d nodes", len(newCfg.Nodes))
@@ -372,7 +376,6 @@ func (m *Manager) Close() error {
 	if m.monitorMgr != nil {
 		m.monitorMgr.Stop()
 		m.monitorMgr = nil
-		m.healthCheckStarted = false
 	}
 	if m.geoRouter != nil {
 		m.geoRouter.Stop()
@@ -847,6 +850,27 @@ func (m *Manager) applyConfigSettings(cfg *config.Config) {
 		m.drainTimeout = defaultDrainTimeout
 	}
 	m.minAvailableNodes = cfg.SubscriptionRefresh.MinAvailableNodes
+}
+
+func healthCheckInterval(cfg *config.Config) time.Duration {
+	if cfg != nil && cfg.HealthCheck.Interval > 0 {
+		return cfg.HealthCheck.Interval
+	}
+	return 5 * time.Minute
+}
+
+func healthCheckTimeout(cfg *config.Config) time.Duration {
+	if cfg != nil && cfg.HealthCheck.Timeout > 0 {
+		return cfg.HealthCheck.Timeout
+	}
+	return 10 * time.Second
+}
+
+func healthCheckConcurrency(cfg *config.Config) int {
+	if cfg != nil && cfg.HealthCheck.Concurrency > 0 {
+		return cfg.HealthCheck.Concurrency
+	}
+	return 8
 }
 
 // defaultLogger is the fallback logger using standard log.

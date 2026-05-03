@@ -746,18 +746,54 @@ export default function SettingsPanel() {
             <p className="label text-base-content/50 mt-1">健康检查的目标地址</p>
           </fieldset>
 
-          <fieldset className="fieldset">
-            <legend className="fieldset-legend font-semibold text-base-content/80">健康检查间隔</legend>
-            <input
-              type="text"
-              className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
-              placeholder="例如: 2h, 30m, 1h30m"
-              value={settings.health_check_interval}
-              onChange={(e) => updateField('health_check_interval', e.target.value)}
-            />
-            <p className="label text-base-content/50 mt-1">Go duration 格式：如 2h、30m、1h30m（修改后立即生效，无需重载）</p>
-          </fieldset>
+        </div>
 
+        {/* ===== 健康检查 ===== */}
+        <div className="rounded-2xl border border-base-300/50 bg-base-100 p-6 lg:p-8 space-y-5 shadow-sm transition-shadow hover:shadow-md">
+          <div className="flex items-center gap-3 mb-2 border-b border-base-200 pb-4">
+            <div className="w-10 h-10 rounded-xl bg-success/10 flex items-center justify-center text-success shrink-0">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+              </svg>
+            </div>
+            <div>
+              <h3 className="font-bold text-lg text-base-content">健康检查</h3>
+              <p className="text-xs text-base-content/50 font-medium">周期探测与批量探测参数</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <fieldset className="fieldset">
+              <legend className="fieldset-legend font-semibold text-base-content/80">检查间隔</legend>
+              <input
+                type="text"
+                className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50 font-mono"
+                placeholder="5m"
+                value={settings.health_check_interval}
+                onChange={(e) => updateField('health_check_interval', e.target.value)}
+              />
+            </fieldset>
+            <fieldset className="fieldset">
+              <legend className="fieldset-legend font-semibold text-base-content/80">探测超时</legend>
+              <input
+                type="text"
+                className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50 font-mono"
+                placeholder="10s"
+                value={settings.health_check_timeout}
+                onChange={(e) => updateField('health_check_timeout', e.target.value)}
+              />
+            </fieldset>
+            <fieldset className="fieldset">
+              <legend className="fieldset-legend font-semibold text-base-content/80">并发数</legend>
+              <input
+                type="number"
+                className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
+                min={1}
+                value={settings.health_check_concurrency}
+                onChange={(e) => updateField('health_check_concurrency', parseInt(e.target.value) || 1)}
+              />
+            </fieldset>
+          </div>
         </div>
 
         {/* ===== GeoIP ===== */}
@@ -817,6 +853,30 @@ export default function SettingsPanel() {
                     )}
                   </button>
                 </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <fieldset className="fieldset">
+                  <legend className="fieldset-legend font-semibold text-base-content/80">路由监听地址</legend>
+                  <input
+                    type="text"
+                    className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
+                    value={settings.geoip_listen}
+                    onChange={(e) => updateField('geoip_listen', e.target.value)}
+                    placeholder={settings.listener_address || '0.0.0.0'}
+                  />
+                </fieldset>
+                <fieldset className="fieldset">
+                  <legend className="fieldset-legend font-semibold text-base-content/80">路由监听端口</legend>
+                  <input
+                    type="number"
+                    className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
+                    value={settings.geoip_port}
+                    onChange={(e) => updateField('geoip_port', parseInt(e.target.value) || 1221)}
+                    min={1}
+                    max={65535}
+                  />
+                </fieldset>
               </div>
 
               <label className="flex items-center justify-between cursor-pointer gap-4 bg-base-200/30 p-4 rounded-xl border border-base-200 hover:border-base-300 transition-colors">
