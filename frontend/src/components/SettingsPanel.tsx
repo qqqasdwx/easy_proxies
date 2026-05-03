@@ -8,6 +8,13 @@ const defaultSettings: SettingsData = {
   external_ip: '',
   skip_cert_verify: false,
 
+  log_output: 'stdout',
+  log_file: 'logs/easy_proxies.log',
+  log_max_size: 50,
+  log_max_backups: 3,
+  log_max_age: 7,
+  log_compress: false,
+
   listener_address: '0.0.0.0',
   listener_port: 2323,
   listener_protocol: 'mixed',
@@ -24,16 +31,32 @@ const defaultSettings: SettingsData = {
   pool_failure_threshold: 3,
   pool_blacklist_duration: '24h0m0s',
 
+  dns_enabled: false,
+  dns_server: '223.5.5.5',
+  dns_fallback_servers: ['8.8.8.8', '1.1.1.1'],
+  dns_port: 53,
+  dns_strategy: 'prefer_ipv4',
+
   management_enabled: true,
   management_listen: '0.0.0.0:9091',
   management_probe_target: '',
-  management_health_check_interval: '2h0m0s',
 
   geoip_enabled: false,
   geoip_database_path: '',
   geoip_database_updated_at: '',
+  geoip_listen: '',
+  geoip_port: 1221,
   geoip_auto_update_enabled: false,
   geoip_auto_update_interval: '24h0m0s',
+
+  subscription_refresh_timeout: '30s',
+  subscription_refresh_health_check_timeout: '60s',
+  subscription_refresh_drain_timeout: '30s',
+  subscription_refresh_min_available_nodes: 1,
+
+  health_check_interval: '5m0s',
+  health_check_timeout: '10s',
+  health_check_concurrency: 8,
 
 }
 
@@ -562,8 +585,8 @@ export default function SettingsPanel() {
               type="text"
               className="input input-md w-full bg-base-200/50 focus:bg-base-100 transition-colors focus:border-primary/50"
               placeholder="例如: 2h, 30m, 1h30m"
-              value={settings.management_health_check_interval}
-              onChange={(e) => updateField('management_health_check_interval', e.target.value)}
+              value={settings.health_check_interval}
+              onChange={(e) => updateField('health_check_interval', e.target.value)}
             />
             <p className="label text-base-content/50 mt-1">Go duration 格式：如 2h、30m、1h30m（修改后立即生效，无需重载）</p>
           </fieldset>

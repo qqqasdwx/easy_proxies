@@ -87,6 +87,14 @@ export interface SettingsData {
   external_ip: string
   skip_cert_verify: boolean
 
+  // Log
+  log_output: string
+  log_file: string
+  log_max_size: number
+  log_max_backups: number
+  log_max_age: number
+  log_compress: boolean
+
   // Listener
   listener_address: string
   listener_port: number
@@ -106,18 +114,37 @@ export interface SettingsData {
   pool_failure_threshold: number
   pool_blacklist_duration: string
 
+  // DNS
+  dns_enabled: boolean
+  dns_server: string
+  dns_fallback_servers: string[]
+  dns_port: number
+  dns_strategy: string
+
   // Management
   management_enabled: boolean
   management_listen: string
   management_probe_target: string
-  management_health_check_interval: string
 
   // GeoIP
   geoip_enabled: boolean
   geoip_database_path: string
   geoip_database_updated_at: string
+  geoip_listen: string
+  geoip_port: number
   geoip_auto_update_enabled: boolean
   geoip_auto_update_interval: string
+
+  // Subscription refresh advanced
+  subscription_refresh_timeout: string
+  subscription_refresh_health_check_timeout: string
+  subscription_refresh_drain_timeout: string
+  subscription_refresh_min_available_nodes: number
+
+  // Health check
+  health_check_interval: string
+  health_check_timeout: string
+  health_check_concurrency: number
 
 }
 

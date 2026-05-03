@@ -30,13 +30,24 @@ type Config struct {
 	Pool                PoolConfig                `yaml:"pool"`
 	Management          ManagementConfig          `yaml:"management"`
 	SubscriptionRefresh SubscriptionRefreshConfig `yaml:"subscription_refresh"`
+	DNS                 DNSConfig                 `yaml:"dns"`
 	GeoIP               GeoIPConfig               `yaml:"geoip"`
+	HealthCheck         HealthCheckConfig         `yaml:"health_check"`
 	Log                 LogConfig                 `yaml:"log"`
 	Nodes               []NodeConfig              `yaml:"nodes"`
 	DatabasePath        string                    `yaml:"database_path"` // SQLite 数据库路径，默认 data/data.db
 	ExternalIP          string                    `yaml:"external_ip"`   // 外部 IP 地址，用于导出时替换 0.0.0.0
 	LogLevel            string                    `yaml:"log_level"`
 	SkipCertVerify      bool                      `yaml:"skip_cert_verify"` // 全局跳过 SSL 证书验证
+}
+
+// DNSConfig controls the optional custom resolver used by sing-box and node metadata lookups.
+type DNSConfig struct {
+	Enabled         bool     `yaml:"enabled"`
+	Server          string   `yaml:"server"`
+	FallbackServers []string `yaml:"fallback_servers"`
+	Port            uint16   `yaml:"port"`
+	Strategy        string   `yaml:"strategy"`
 }
 
 // LogConfig controls log output and rotation.
@@ -57,6 +68,13 @@ type GeoIPConfig struct {
 	Port               uint16        `yaml:"port"`                 // GeoIP 路由监听端口，默认 1221
 	AutoUpdateEnabled  bool          `yaml:"auto_update_enabled"`  // 是否启用自动更新数据库
 	AutoUpdateInterval time.Duration `yaml:"auto_update_interval"` // 自动更新间隔，默认 24 小时
+}
+
+// HealthCheckConfig controls periodic and manual node probes.
+type HealthCheckConfig struct {
+	Interval    time.Duration `yaml:"interval"`
+	Timeout     time.Duration `yaml:"timeout"`
+	Concurrency int           `yaml:"concurrency"`
 }
 
 // ListenerConfig defines how the proxy should listen for clients.
@@ -117,6 +135,14 @@ const (
 )
 
 const (
+	DNSStrategyAsIs       = "as_is"
+	DNSStrategyPreferIPv4 = "prefer_ipv4"
+	DNSStrategyPreferIPv6 = "prefer_ipv6"
+	DNSStrategyIPv4Only   = "ipv4_only"
+	DNSStrategyIPv6Only   = "ipv6_only"
+)
+
+const (
 	EnvManagementPort     = "MANAGEMENT_PORT"
 	EnvManagementPassword = "MANAGEMENT_PASSWORD"
 )
@@ -165,6 +191,60 @@ func (c *Config) normalizeInboundProtocols() error {
 func (c *Config) normalizeDatabasePath() {
 	if c.DatabasePath == "" {
 		c.DatabasePath = "data/data.db"
+	}
+}
+
+// NormalizeDNSStrategy normalizes and validates DNS domain strategy values.
+func NormalizeDNSStrategy(value string) (string, error) {
+	strategy := strings.ToLower(strings.TrimSpace(value))
+	if strategy == "" {
+		return DNSStrategyPreferIPv4, nil
+	}
+	switch strategy {
+	case DNSStrategyAsIs, DNSStrategyPreferIPv4, DNSStrategyPreferIPv6, DNSStrategyIPv4Only, DNSStrategyIPv6Only:
+		return strategy, nil
+	default:
+		return "", fmt.Errorf("unsupported dns.strategy %q (use 'as_is', 'prefer_ipv4', 'prefer_ipv6', 'ipv4_only', or 'ipv6_only')", value)
+	}
+}
+
+func (c *Config) normalizeDNSConfig() error {
+	var err error
+	c.DNS.Strategy, err = NormalizeDNSStrategy(c.DNS.Strategy)
+	if err != nil {
+		return err
+	}
+	c.DNS.Server = strings.TrimSpace(c.DNS.Server)
+	if c.DNS.Server == "" {
+		c.DNS.Server = "223.5.5.5"
+	}
+	if c.DNS.Port == 0 {
+		c.DNS.Port = 53
+	}
+	if c.DNS.FallbackServers == nil {
+		c.DNS.FallbackServers = []string{"8.8.8.8", "1.1.1.1"}
+	} else {
+		cleaned := c.DNS.FallbackServers[:0]
+		for _, server := range c.DNS.FallbackServers {
+			server = strings.TrimSpace(server)
+			if server != "" {
+				cleaned = append(cleaned, server)
+			}
+		}
+		c.DNS.FallbackServers = cleaned
+	}
+	return nil
+}
+
+func (c *Config) normalizeHealthCheckConfig() {
+	if c.HealthCheck.Interval <= 0 {
+		c.HealthCheck.Interval = 5 * time.Minute
+	}
+	if c.HealthCheck.Timeout <= 0 {
+		c.HealthCheck.Timeout = 10 * time.Second
+	}
+	if c.HealthCheck.Concurrency <= 0 {
+		c.HealthCheck.Concurrency = 8
 	}
 }
 
@@ -340,6 +420,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	if err := c.normalizeInboundProtocols(); err != nil {
 		return err
 	}
+	if err := c.normalizeDNSConfig(); err != nil {
+		return err
+	}
 	if c.Management.Listen == "" {
 		c.Management.Listen = "0.0.0.0:9091"
 	}
@@ -370,6 +453,7 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	if c.SubscriptionRefresh.MinAvailableNodes <= 0 {
 		c.SubscriptionRefresh.MinAvailableNodes = 1
 	}
+	c.normalizeHealthCheckConfig()
 
 	// Build set of ports already assigned from portMap
 	usedPorts := make(map[uint16]bool)

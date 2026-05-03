@@ -221,6 +221,9 @@ func (s *Server) updateSettings(externalIP, probeTarget string, skipCertVerify b
 
 	if logCfg != nil {
 		s.cfgSrc.Log.Output = logCfg.Output
+		if strings.TrimSpace(logCfg.File) != "" {
+			s.cfgSrc.Log.File = strings.TrimSpace(logCfg.File)
+		}
 		if logCfg.MaxSize > 0 {
 			s.cfgSrc.Log.MaxSize = logCfg.MaxSize
 		}
@@ -929,6 +932,17 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
+func cleanStringList(values []string) []string {
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	return cleaned
+}
+
 // handleSettings handles GET/PUT for dynamic settings (external_ip, probe_target, skip_cert_verify, log).
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -953,6 +967,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"max_age":     logCfg.MaxAge,
 				"compress":    logCfg.Compress,
 			},
+			"dns": map[string]any{
+				"enabled":          false,
+				"server":           "223.5.5.5",
+				"fallback_servers": []string{"8.8.8.8", "1.1.1.1"},
+				"port":             53,
+				"strategy":         config.DNSStrategyPreferIPv4,
+			},
 			"geoip": map[string]any{
 				"enabled":              false,
 				"database_path":        config.DefaultGeoIPDatabasePath(),
@@ -961,6 +982,17 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"port":                 0,
 				"auto_update_enabled":  false,
 				"auto_update_interval": "",
+			},
+			"subscription_refresh": map[string]any{
+				"timeout":              "",
+				"health_check_timeout": "",
+				"drain_timeout":        "",
+				"min_available_nodes":  1,
+			},
+			"health_check": map[string]any{
+				"interval":    "",
+				"timeout":     "",
+				"concurrency": 8,
 			},
 		}
 		if cfg != nil {
@@ -985,6 +1017,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"failure_threshold":  cfg.Pool.FailureThreshold,
 				"blacklist_duration": cfg.Pool.BlacklistDuration.String(),
 			}
+			resp["dns"] = map[string]any{
+				"enabled":          cfg.DNS.Enabled,
+				"server":           cfg.DNS.Server,
+				"fallback_servers": cfg.DNS.FallbackServers,
+				"port":             cfg.DNS.Port,
+				"strategy":         cfg.DNS.Strategy,
+			}
 			resp["management"] = map[string]any{
 				"enabled":      cfg.ManagementEnabled(),
 				"listen":       cfg.Management.Listen,
@@ -998,6 +1037,17 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"port":                 cfg.GeoIP.Port,
 				"auto_update_enabled":  cfg.GeoIP.AutoUpdateEnabled,
 				"auto_update_interval": cfg.GeoIP.AutoUpdateInterval.String(),
+			}
+			resp["subscription_refresh"] = map[string]any{
+				"timeout":              cfg.SubscriptionRefresh.Timeout.String(),
+				"health_check_timeout": cfg.SubscriptionRefresh.HealthCheckTimeout.String(),
+				"drain_timeout":        cfg.SubscriptionRefresh.DrainTimeout.String(),
+				"min_available_nodes":  cfg.SubscriptionRefresh.MinAvailableNodes,
+			}
+			resp["health_check"] = map[string]any{
+				"interval":    cfg.HealthCheck.Interval.String(),
+				"timeout":     cfg.HealthCheck.Timeout.String(),
+				"concurrency": cfg.HealthCheck.Concurrency,
 			}
 		}
 		writeJSON(w, resp)
@@ -1034,11 +1084,19 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			} `json:"management,omitempty"`
 			Log *struct {
 				Output     string `json:"output"`
+				File       string `json:"file"`
 				MaxSize    int    `json:"max_size"`
 				MaxBackups int    `json:"max_backups"`
 				MaxAge     int    `json:"max_age"`
 				Compress   bool   `json:"compress"`
 			} `json:"log"`
+			DNS *struct {
+				Enabled         bool     `json:"enabled"`
+				Server          string   `json:"server"`
+				FallbackServers []string `json:"fallback_servers"`
+				Port            uint16   `json:"port"`
+				Strategy        string   `json:"strategy"`
+			} `json:"dns"`
 			GeoIP *struct {
 				Enabled            bool   `json:"enabled"`
 				Listen             string `json:"listen"`
@@ -1046,6 +1104,17 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				AutoUpdateEnabled  bool   `json:"auto_update_enabled"`
 				AutoUpdateInterval string `json:"auto_update_interval"`
 			} `json:"geoip"`
+			SubscriptionRefresh *struct {
+				Timeout            string `json:"timeout"`
+				HealthCheckTimeout string `json:"health_check_timeout"`
+				DrainTimeout       string `json:"drain_timeout"`
+				MinAvailableNodes  int    `json:"min_available_nodes"`
+			} `json:"subscription_refresh"`
+			HealthCheck *struct {
+				Interval    string `json:"interval"`
+				Timeout     string `json:"timeout"`
+				Concurrency int    `json:"concurrency"`
+			} `json:"health_check"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -1060,11 +1129,23 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if req.Log != nil {
 			logCfg = &config.LogConfig{
 				Output:     req.Log.Output,
+				File:       req.Log.File,
 				MaxSize:    req.Log.MaxSize,
 				MaxBackups: req.Log.MaxBackups,
 				MaxAge:     req.Log.MaxAge,
 				Compress:   req.Log.Compress,
 			}
+		}
+
+		var dnsStrategy string
+		if req.DNS != nil {
+			normalized, err := config.NormalizeDNSStrategy(req.DNS.Strategy)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			dnsStrategy = normalized
 		}
 
 		var listenerProtocol string
@@ -1130,6 +1211,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+			if req.DNS != nil {
+				s.cfgSrc.DNS.Enabled = req.DNS.Enabled
+				s.cfgSrc.DNS.Server = strings.TrimSpace(req.DNS.Server)
+				s.cfgSrc.DNS.FallbackServers = cleanStringList(req.DNS.FallbackServers)
+				s.cfgSrc.DNS.Port = req.DNS.Port
+				s.cfgSrc.DNS.Strategy = dnsStrategy
+			}
 			if req.Management != nil {
 				if req.Management.Enabled != nil {
 					s.cfgSrc.Management.Enabled = req.Management.Enabled
@@ -1149,6 +1237,47 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 						s.cfgSrc.GeoIP.AutoUpdateInterval = d
 					}
 				}
+			}
+			if req.SubscriptionRefresh != nil {
+				if req.SubscriptionRefresh.Timeout != "" {
+					if d, err := time.ParseDuration(req.SubscriptionRefresh.Timeout); err == nil {
+						s.cfgSrc.SubscriptionRefresh.Timeout = d
+					}
+				}
+				if req.SubscriptionRefresh.HealthCheckTimeout != "" {
+					if d, err := time.ParseDuration(req.SubscriptionRefresh.HealthCheckTimeout); err == nil {
+						s.cfgSrc.SubscriptionRefresh.HealthCheckTimeout = d
+					}
+				}
+				if req.SubscriptionRefresh.DrainTimeout != "" {
+					if d, err := time.ParseDuration(req.SubscriptionRefresh.DrainTimeout); err == nil {
+						s.cfgSrc.SubscriptionRefresh.DrainTimeout = d
+					}
+				}
+				if req.SubscriptionRefresh.MinAvailableNodes > 0 {
+					s.cfgSrc.SubscriptionRefresh.MinAvailableNodes = req.SubscriptionRefresh.MinAvailableNodes
+				}
+			}
+			if req.HealthCheck != nil {
+				if req.HealthCheck.Interval != "" {
+					if d, err := time.ParseDuration(req.HealthCheck.Interval); err == nil {
+						s.cfgSrc.HealthCheck.Interval = d
+					}
+				}
+				if req.HealthCheck.Timeout != "" {
+					if d, err := time.ParseDuration(req.HealthCheck.Timeout); err == nil {
+						s.cfgSrc.HealthCheck.Timeout = d
+					}
+				}
+				if req.HealthCheck.Concurrency > 0 {
+					s.cfgSrc.HealthCheck.Concurrency = req.HealthCheck.Concurrency
+				}
+			}
+			if err := s.cfgSrc.NormalizeWithPortMap(s.cfgSrc.BuildPortMap()); err != nil {
+				s.cfgMu.Unlock()
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
 			}
 			if s.store != nil {
 				if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {

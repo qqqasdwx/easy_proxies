@@ -97,6 +97,14 @@ interface RawSettings {
   log_level?: string
   skip_cert_verify?: boolean
   mode?: string
+  log?: {
+    output?: string
+    file?: string
+    max_size?: number
+    max_backups?: number
+    max_age?: number
+    compress?: boolean
+  }
   listener?: {
     address?: string
     port?: number
@@ -116,6 +124,13 @@ interface RawSettings {
     failure_threshold?: number
     blacklist_duration?: string
   }
+  dns?: {
+    enabled?: boolean
+    server?: string
+    fallback_servers?: string[]
+    port?: number
+    strategy?: string
+  }
   management?: {
     enabled?: boolean
     listen?: string
@@ -125,8 +140,21 @@ interface RawSettings {
     enabled?: boolean
     database_path?: string
     database_updated_at?: string
+    listen?: string
+    port?: number
     auto_update_enabled?: boolean
     auto_update_interval?: string
+  }
+  subscription_refresh?: {
+    timeout?: string
+    health_check_timeout?: string
+    drain_timeout?: string
+    min_available_nodes?: number
+  }
+  health_check?: {
+    interval?: string
+    timeout?: string
+    concurrency?: number
   }
 }
 
@@ -352,6 +380,21 @@ export async function updateSettings(settings: SettingsData): Promise<SettingsUp
         failure_threshold: settings.pool_failure_threshold,
         blacklist_duration: settings.pool_blacklist_duration,
       },
+      log: {
+        output: settings.log_output,
+        file: settings.log_file,
+        max_size: settings.log_max_size,
+        max_backups: settings.log_max_backups,
+        max_age: settings.log_max_age,
+        compress: settings.log_compress,
+      },
+      dns: {
+        enabled: settings.dns_enabled,
+        server: settings.dns_server,
+        fallback_servers: settings.dns_fallback_servers,
+        port: settings.dns_port,
+        strategy: settings.dns_strategy,
+      },
       management: {
         enabled: settings.management_enabled,
         listen: settings.management_listen,
@@ -359,8 +402,21 @@ export async function updateSettings(settings: SettingsData): Promise<SettingsUp
       },
       geoip: {
         enabled: settings.geoip_enabled,
+        listen: settings.geoip_listen,
+        port: settings.geoip_port,
         auto_update_enabled: settings.geoip_auto_update_enabled,
         auto_update_interval: settings.geoip_auto_update_interval,
+      },
+      subscription_refresh: {
+        timeout: settings.subscription_refresh_timeout,
+        health_check_timeout: settings.subscription_refresh_health_check_timeout,
+        drain_timeout: settings.subscription_refresh_drain_timeout,
+        min_available_nodes: settings.subscription_refresh_min_available_nodes,
+      },
+      health_check: {
+        interval: settings.health_check_interval,
+        timeout: settings.health_check_timeout,
+        concurrency: settings.health_check_concurrency,
       },
     }),
   })
@@ -382,6 +438,13 @@ function normalizeSettings(raw: RawSettings): SettingsData {
     external_ip: raw.external_ip || '',
     skip_cert_verify: raw.skip_cert_verify || false,
 
+    log_output: raw.log?.output || 'stdout',
+    log_file: raw.log?.file || 'logs/easy_proxies.log',
+    log_max_size: raw.log?.max_size || 50,
+    log_max_backups: raw.log?.max_backups || 3,
+    log_max_age: raw.log?.max_age || 7,
+    log_compress: raw.log?.compress || false,
+
     listener_address: raw.listener?.address || '0.0.0.0',
     listener_port: raw.listener?.port || 2323,
     listener_protocol: raw.listener?.protocol || 'mixed',
@@ -398,16 +461,32 @@ function normalizeSettings(raw: RawSettings): SettingsData {
     pool_failure_threshold: raw.pool?.failure_threshold || 3,
     pool_blacklist_duration: raw.pool?.blacklist_duration || '24h0m0s',
 
+    dns_enabled: raw.dns?.enabled || false,
+    dns_server: raw.dns?.server || '223.5.5.5',
+    dns_fallback_servers: raw.dns?.fallback_servers || ['8.8.8.8', '1.1.1.1'],
+    dns_port: raw.dns?.port || 53,
+    dns_strategy: raw.dns?.strategy || 'prefer_ipv4',
+
     management_enabled: raw.management?.enabled ?? true,
     management_listen: raw.management?.listen || '0.0.0.0:9091',
     management_probe_target: raw.management?.probe_target || raw.probe_target || '',
-    management_health_check_interval: '5m0s',
 
     geoip_enabled: raw.geoip?.enabled || false,
     geoip_database_path: raw.geoip?.database_path || '',
     geoip_database_updated_at: raw.geoip?.database_updated_at || '',
+    geoip_listen: raw.geoip?.listen || '',
+    geoip_port: raw.geoip?.port || 1221,
     geoip_auto_update_enabled: raw.geoip?.auto_update_enabled ?? false,
     geoip_auto_update_interval: raw.geoip?.auto_update_interval || '24h0m0s',
+
+    subscription_refresh_timeout: raw.subscription_refresh?.timeout || '30s',
+    subscription_refresh_health_check_timeout: raw.subscription_refresh?.health_check_timeout || '60s',
+    subscription_refresh_drain_timeout: raw.subscription_refresh?.drain_timeout || '30s',
+    subscription_refresh_min_available_nodes: raw.subscription_refresh?.min_available_nodes || 1,
+
+    health_check_interval: raw.health_check?.interval || '5m0s',
+    health_check_timeout: raw.health_check?.timeout || '10s',
+    health_check_concurrency: raw.health_check?.concurrency || 8,
 
   }
 }
