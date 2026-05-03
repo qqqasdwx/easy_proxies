@@ -93,16 +93,17 @@ When GeoIP is enabled, Easy Proxies automatically classifies your proxy nodes by
 | `sg` | Singapore 🇸🇬 |
 | `other` | All other regions |
 
-### Configuration
+### Settings
 
-```yaml
-geoip:
-  enabled: true
-  listen: "0.0.0.0"          # defaults to listener.address if omitted
-  port: 1221                  # defaults to listener.port if omitted
-  auto_update_enabled: true   # auto-update the GeoIP database
-  auto_update_interval: 24h   # check interval
-```
+GeoIP is configured from the WebUI Settings page or `/api/settings`.
+
+| Field | Purpose |
+|-------|---------|
+| `geoip.enabled` | Enable region classification and the GeoIP router |
+| `geoip.listen` | Router listen address; defaults to the pool listener address when empty |
+| `geoip.port` | Router listen port; defaults to `1221` |
+| `geoip.auto_update_enabled` | Automatically refresh the GeoIP database |
+| `geoip.auto_update_interval` | Refresh interval, for example `24h` |
 
 The GeoIP router reuses the `listener.username` and `listener.password` for proxy authentication.
 
@@ -243,7 +244,7 @@ Features:
 - **Subscriptions**: Manage multiple subscription sources, auto-update, manual refresh, and refresh status
 - **Diagnostics**: Connectivity testing and node state export
 - **Console**: Application logs from the in-memory ring buffer (last 1000 lines)
-- **Settings**: Runtime options are editable from the browser; node state persists in SQLite
+- **Settings**: Runtime mode, listeners, DNS, GeoIP, health checks, and log rotation are editable from the browser
 
 Set `MANAGEMENT_PASSWORD` to require login. The management password is never stored in SQLite, logged, or returned by the settings API.
 
@@ -264,6 +265,7 @@ Set `MANAGEMENT_PASSWORD` to require login. The management password is never sto
 | `/api/subscriptions` | GET, POST | List/create subscription sources |
 | `/api/subscriptions/{id}` | PUT, DELETE | Update/delete one subscription source |
 | `/api/subscriptions/{id}/refresh` | POST | Refresh one subscription source |
+| `/api/subscriptions/settings` | GET, PUT | Read/update subscription refresh strategy |
 | `/api/subscription/status` | GET | Check aggregate subscription status |
 | `/api/geoip/refresh` | POST | Force-refresh the GeoIP database |
 | `/api/nodes/config` | GET, POST | List/create node config |

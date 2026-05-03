@@ -18,7 +18,7 @@ Easy Proxies 是一个基于 sing-box 的代理池管理工具。
 - Web 管理面板 + API：
   - 节点状态/探测/导出
   - **手动拉黑/解封节点**
-  - 动态设置（`external_ip`、`probe_target`、`skip_cert_verify`、`geoip`）
+  - 动态设置（运行模式、监听、DNS、GeoIP、健康检查、日志轮转等）
   - 节点配置增删改查 + 重载
   - 订阅状态查询 + 手动刷新 + **保存即时生效**
   - **日志控制台**（最近 1000 行，WebUI 自动刷新）
@@ -60,17 +60,7 @@ Easy Proxies 不再读取或写入 `config.yaml`、`nodes.txt`。启动流程是
 
 ## DNS 配置说明
 
-`dns` 会同时影响 sing-box DNS 客户端和 VMess 域名拨号解析：
-
-```yaml
-dns:
-  server: 223.5.5.5
-  fallback_servers:    # 备用 DNS 服务器（主 DNS 解析失败时使用）
-    - 8.8.8.8
-    - 1.1.1.1
-  port: 53
-  strategy: prefer_ipv4
-```
+DNS 设置在 WebUI「系统设置」中维护，会同时影响 sing-box DNS 客户端和 GeoIP 域名解析。主要字段包括：主 DNS 服务器、备用 DNS 服务器、端口和 IP 策略。
 
 `strategy` 可选值：
 
@@ -145,6 +135,7 @@ docker compose up -d
 - `GET|POST /api/subscriptions`
 - `PUT|DELETE /api/subscriptions/{id}`
 - `POST /api/subscriptions/{id}/refresh`
+- `GET|PUT /api/subscriptions/settings`
 - `GET /api/subscription/status`
 - `POST /api/geoip/refresh`
 - `GET|POST /api/nodes/config`
@@ -159,9 +150,9 @@ docker compose up -d
 ## 重要运行说明
 
 - 重载（`/api/reload` 或订阅刷新）会中断现有连接。
-- Settings API 修改运行时设置；节点、订阅、会话和统计数据持久化到 SQLite。
+- Settings API 修改运行时设置；订阅刷新策略由 `/api/subscriptions/settings` 管理；节点、订阅、会话和统计数据持久化到 SQLite。
 - 省略项默认值可在 `internal/config/config.go` 中查看。
-- 日志轮转通过 `log` 配置段设置；当 `output: file` 时，日志同时写入控制台和文件，并自动轮转。
+- 日志轮转在 WebUI「系统设置」中配置；当输出方式为 `file` 时，日志同时写入控制台和文件，并自动轮转。
 
 ## 更新日志
 

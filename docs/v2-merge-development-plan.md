@@ -87,7 +87,7 @@ git merge --no-ff feat/v2-<stage-name>
 - 从 V2 移植并适配 `NormalizeInboundProtocol`。
 - 在 `internal/builder/builder.go` 增加 `buildInboundByProtocol`。
 - 保持旧配置无 `protocol` 时行为不变，默认 `mixed` 或当前等价行为。
-- 更新 `config.example.yaml`、README 和导出逻辑。
+- 更新 README、WebUI 设置说明和导出逻辑。
 
 ### 测试
 
@@ -239,7 +239,7 @@ git merge --no-ff feat/v2-<stage-name>
 
 ### 任务
 
-- 更新 `config.example.yaml`。
+- 更新 README 和 WebUI 设置说明。
 - 更新 README/README_ZH。
 - 增加从纯文件模式迁移到 SQLite 模式的说明。
 - 明确 Docker volume：
