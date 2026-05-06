@@ -87,14 +87,6 @@ export interface SettingsData {
   external_ip: string
   skip_cert_verify: boolean
 
-  // Log
-  log_output: string
-  log_file: string
-  log_max_size: number
-  log_max_backups: number
-  log_max_age: number
-  log_compress: boolean
-
   // Listener
   listener_address: string
   listener_port: number

@@ -98,14 +98,6 @@ interface RawSettings {
   log_level?: string
   skip_cert_verify?: boolean
   mode?: string
-  log?: {
-    output?: string
-    file?: string
-    max_size?: number
-    max_backups?: number
-    max_age?: number
-    compress?: boolean
-  }
   listener?: {
     address?: string
     port?: number
@@ -375,14 +367,6 @@ export async function updateSettings(settings: SettingsData): Promise<SettingsUp
         failure_threshold: settings.pool_failure_threshold,
         blacklist_duration: settings.pool_blacklist_duration,
       },
-      log: {
-        output: settings.log_output,
-        file: settings.log_file,
-        max_size: settings.log_max_size,
-        max_backups: settings.log_max_backups,
-        max_age: settings.log_max_age,
-        compress: settings.log_compress,
-      },
       dns: {
         enabled: settings.dns_enabled,
         server: settings.dns_server,
@@ -426,13 +410,6 @@ function normalizeSettings(raw: RawSettings): SettingsData {
     log_level: raw.log_level || 'info',
     external_ip: raw.external_ip || '',
     skip_cert_verify: raw.skip_cert_verify || false,
-
-    log_output: raw.log?.output || 'stdout',
-    log_file: raw.log?.file || 'logs/easy_proxies.log',
-    log_max_size: raw.log?.max_size || 50,
-    log_max_backups: raw.log?.max_backups || 3,
-    log_max_age: raw.log?.max_age || 7,
-    log_compress: raw.log?.compress || false,
 
     listener_address: raw.listener?.address || '0.0.0.0',
     listener_port: raw.listener?.port || 2323,

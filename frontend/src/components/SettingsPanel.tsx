@@ -2,20 +2,13 @@ import { useState, useEffect, type ReactNode } from 'react'
 import type { SettingsData } from '../types'
 import { fetchSettings, updateSettings, triggerReload, refreshGeoIPDatabase } from '../api/client'
 
-type SettingsSection = 'runtime' | 'network' | 'health' | 'logs' | 'system'
+type SettingsSection = 'runtime' | 'network' | 'health' | 'system'
 
 const defaultSettings: SettingsData = {
   mode: 'pool',
   log_level: 'info',
   external_ip: '',
   skip_cert_verify: false,
-
-  log_output: 'stdout',
-  log_file: 'logs/easy_proxies.log',
-  log_max_size: 50,
-  log_max_backups: 3,
-  log_max_age: 7,
-  log_compress: false,
 
   listener_address: '0.0.0.0',
   listener_port: 2323,
@@ -60,8 +53,7 @@ const sections: Array<{ id: SettingsSection; title: string; description: string 
   { id: 'runtime', title: '运行模式', description: '监听入口与代理池调度' },
   { id: 'network', title: '网络与路由', description: 'DNS 与 GeoIP' },
   { id: 'health', title: '健康检查', description: '探测目标、超时和并发' },
-  { id: 'logs', title: '日志', description: '级别、输出和轮转' },
-  { id: 'system', title: '系统', description: '管理端与全局开关' },
+  { id: 'system', title: '系统', description: '管理端、诊断与全局开关' },
 ]
 
 const inputClass = 'input input-md w-full bg-base-200/60 focus:bg-base-100 border-base-300/70 focus:border-primary/60'
@@ -506,62 +498,6 @@ export default function SettingsPanel() {
     </>
   )
 
-  const renderLogsSection = () => (
-    <>
-      <SectionTitle title="日志" description="配置日志级别、输出方式和文件轮转策略。" />
-
-      <Group title="日志输出">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <fieldset className="fieldset">
-            <legend className="fieldset-legend">日志级别</legend>
-            <select className={selectClass} value={settings.log_level} onChange={e => updateField('log_level', e.target.value)}>
-              <option value="debug">debug</option>
-              <option value="info">info</option>
-              <option value="warn">warn</option>
-              <option value="error">error</option>
-            </select>
-          </fieldset>
-          <fieldset className="fieldset">
-            <legend className="fieldset-legend">输出方式</legend>
-            <select className={selectClass} value={settings.log_output} onChange={e => updateField('log_output', e.target.value)}>
-              <option value="stdout">stdout</option>
-              <option value="file">file</option>
-            </select>
-          </fieldset>
-        </div>
-      </Group>
-
-      {settings.log_output === 'file' && (
-        <Group title="文件轮转">
-          <fieldset className="fieldset">
-            <legend className="fieldset-legend">日志文件</legend>
-            <input className={inputClass} value={settings.log_file} onChange={e => updateField('log_file', e.target.value)} />
-          </fieldset>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">最大大小 MB</legend>
-              <input type="number" className={inputClass} value={settings.log_max_size} min={1} onChange={e => updateField('log_max_size', parseInt(e.target.value) || 1)} />
-            </fieldset>
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">保留文件数</legend>
-              <input type="number" className={inputClass} value={settings.log_max_backups} min={1} onChange={e => updateField('log_max_backups', parseInt(e.target.value) || 1)} />
-            </fieldset>
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">保留天数</legend>
-              <input type="number" className={inputClass} value={settings.log_max_age} min={1} onChange={e => updateField('log_max_age', parseInt(e.target.value) || 1)} />
-            </fieldset>
-          </div>
-
-          <label className="flex items-center justify-between gap-4 border border-base-300/70 rounded-lg px-4 py-3">
-            <span className="font-semibold">压缩旧日志</span>
-            <input type="checkbox" className="toggle toggle-primary" checked={settings.log_compress} onChange={e => updateField('log_compress', e.target.checked)} />
-          </label>
-        </Group>
-      )}
-    </>
-  )
-
   const renderSystemSection = () => (
     <>
       <SectionTitle title="系统" description="管理端监听、导出地址和全局连接选项。" />
@@ -575,6 +511,19 @@ export default function SettingsPanel() {
         <fieldset className="fieldset">
           <legend className="fieldset-legend">监听地址</legend>
           <input className={inputClass} placeholder="0.0.0.0:9091" value={settings.management_listen} onChange={e => updateField('management_listen', e.target.value)} />
+        </fieldset>
+      </Group>
+
+      <Group title="诊断">
+        <fieldset className="fieldset">
+          <legend className="fieldset-legend">sing-box 日志级别</legend>
+          <select className={selectClass} value={settings.log_level} onChange={e => updateField('log_level', e.target.value)}>
+            <option value="debug">debug - 临时排查连接问题</option>
+            <option value="info">info - 默认</option>
+            <option value="warn">warn - 仅警告和错误</option>
+            <option value="error">error - 仅错误</option>
+          </select>
+          <p className="label text-base-content/50 mt-1">日志内容在左侧“日志控制台”查看，文件输出和轮转由部署环境管理。</p>
         </fieldset>
       </Group>
 
@@ -603,8 +552,6 @@ export default function SettingsPanel() {
         return renderNetworkSection()
       case 'health':
         return renderHealthSection()
-      case 'logs':
-        return renderLogsSection()
       case 'system':
         return renderSystemSection()
       default:
@@ -664,7 +611,7 @@ export default function SettingsPanel() {
             )}
             {needReload && (
               <div role="alert" className="alert alert-warning alert-soft text-sm">
-                <span>配置已保存，运行模式、监听端口、代理池、DNS、GeoIP 和日志等运行配置可能需要重载后完全生效。</span>
+                <span>配置已保存，运行模式、监听端口、代理池、DNS、GeoIP 和 sing-box 日志级别等运行配置可能需要重载后完全生效。</span>
               </div>
             )}
           </div>
