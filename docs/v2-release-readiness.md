@@ -9,10 +9,12 @@ Date: 2026-05-07
 | `go test ./...` | Passed |
 | `npm --prefix frontend run lint` | Passed |
 | `npm --prefix frontend run build` | Passed |
+| `npm --prefix frontend audit --audit-level=moderate` | Passed |
 | `git diff --check` | Passed |
 | `docker build -t easy_proxies:dev .` | Passed |
 | `go test ./internal/subscription ./internal/boxmgr ./internal/monitor ./internal/config` | Passed |
 | `scripts/e2e/docker-proxy-flow.sh` | Passed |
+| GitHub Actions image publishing | Verified |
 | Docker E2E with clean SQLite, host networking, local SOCKS upstream, and local HTTP target | Passed |
 | `pool`, `multi-port`, and `hybrid` proxy requests through Docker | Passed |
 | Subscription refresh after WebUI settings changes | Passed |
@@ -36,3 +38,4 @@ Date: 2026-05-07
 - Required Docker mounts are `./data:/app/data` for SQLite/GeoIP data and `./logs:/app/logs` for logs.
 - `MANAGEMENT_PORT` controls the WebUI/API port at process start. `MANAGEMENT_PASSWORD` is read only from the process environment.
 - Subscription refresh now rebuilds sing-box from the current runtime settings, so WebUI changes are preserved across manual and automatic refreshes.
+- `.github/workflows/docker-publish.yml` still triggers on `main`, release tags, pull requests, and manual dispatch. GHCR image names are derived from `${{ github.repository }}`.

@@ -18,13 +18,13 @@ Easy Proxies 是一个基于 sing-box 的代理池管理工具。
 - Web 管理面板 + API：
   - 节点状态/探测/导出
   - **手动拉黑/解封节点**
-  - 动态设置（运行模式、监听、DNS、GeoIP、健康检查、日志轮转等）
+  - 动态设置（运行模式、监听、DNS、GeoIP、健康检查、sing-box 日志级别等）
   - 节点配置增删改查 + 重载
   - 订阅状态查询 + 手动刷新 + **保存即时生效**
   - **日志控制台**（最近 1000 行，WebUI 自动刷新）
 - 新增可配置 DNS 解析器（对 VMess 域名节点非常关键）。
 - 可选 GeoIP 标记（支持 JP/KR/US/HK/TW/SG 地域分区，可在 WebUI 中开关，支持自动更新和热重载）。
-- **可配置日志轮转**，支持大小限制、备份数量和压缩。
+- WebUI 可查看最近应用日志，并调整 sing-box 日志级别；日志文件输出和轮转由部署环境管理。
 - **SQLite store** 是唯一持久化来源，保存运行设置、节点、订阅源、禁用状态、会话和流量统计。
 
 ## 快速开始
@@ -152,7 +152,7 @@ docker compose up -d
 - 重载（`/api/reload` 或订阅刷新）会中断现有连接。
 - Settings API 修改运行时设置；订阅刷新策略由 `/api/subscriptions/settings` 管理；节点、订阅、会话和统计数据持久化到 SQLite。
 - 省略项默认值可在 `internal/config/config.go` 中查看。
-- 日志轮转在 WebUI「系统设置」中配置；当输出方式为 `file` 时，日志同时写入控制台和文件，并自动轮转。
+- WebUI「日志控制台」显示内存中的最近应用日志；WebUI「系统设置」只控制 sing-box 日志级别。
 
 ## 更新日志
 
@@ -166,6 +166,14 @@ npm ci --prefix frontend
 npm run build --prefix frontend
 docker build -t easy_proxies:dev .
 ```
+
+运行 Docker 端到端回归：
+
+```bash
+scripts/e2e/docker-proxy-flow.sh
+```
+
+该脚本会构建临时镜像，启动本地 HTTP 目标、SOCKS 上游和 Easy Proxies 容器，并验证 `pool`、`multi-port`、`hybrid`、订阅刷新和重启持久化。
 
 ## Star History
 
