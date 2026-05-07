@@ -12,6 +12,7 @@ Date: 2026-05-07
 | `git diff --check` | Passed |
 | `docker build -t easy_proxies:dev .` | Passed |
 | `go test ./internal/subscription ./internal/boxmgr ./internal/monitor ./internal/config` | Passed |
+| `scripts/e2e/docker-proxy-flow.sh` | Passed |
 | Docker E2E with clean SQLite, host networking, local SOCKS upstream, and local HTTP target | Passed |
 | `pool`, `multi-port`, and `hybrid` proxy requests through Docker | Passed |
 | Subscription refresh after WebUI settings changes | Passed |

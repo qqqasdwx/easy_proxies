@@ -326,6 +326,14 @@ npm run build --prefix frontend
 docker build -t easy_proxies:dev .
 ```
 
+Run the Docker proxy flow regression locally:
+
+```bash
+scripts/e2e/docker-proxy-flow.sh
+```
+
+The script builds `easy_proxies:e2e`, starts a temporary HTTP target, a SOCKS upstream container, and an Easy Proxies container with a clean SQLite store. It verifies `pool`, `multi-port`, `hybrid`, subscription refresh, and restart persistence, then cleans up.
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=qqqasdwx/easy_proxies&type=Date)](https://star-history.com/#qqqasdwx/easy_proxies&Date)
