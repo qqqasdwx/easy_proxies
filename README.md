@@ -12,10 +12,10 @@
 - **GeoIP region routing**: classify nodes by country and route traffic through a specific region via a dedicated HTTP proxy endpoint
 - **Database-backed node sources**: manual WebUI/API nodes and multiple subscription sources (Base64, plain text, Clash YAML) coexist in SQLite
 - **Subscription auto-refresh with hot-reload**: periodically fetches subscription updates and reloads without restart
-- **WebUI dashboard**: real-time node status, traffic charts, diagnostics, log console, and full settings management
+- **WebUI dashboard**: real-time node status, traffic charts, diagnostics, log console, and runtime settings management
 - **Management API**: RESTful endpoints for node CRUD, probing, blacklisting, subscription management, and config reload
 - **Configurable DNS resolver** with fallback servers and IPv4/IPv6 strategy control
-- **Log rotation**: size-based rotation with configurable backup count, age, and compression
+- **Runtime logging controls**: view recent application logs and adjust sing-box log verbosity from the WebUI
 - **Multi-platform Docker**: supports amd64 and arm64 with host networking
 
 ## Quick Start
@@ -109,8 +109,8 @@ The GeoIP router reuses the `listener.username` and `listener.password` for prox
 
 Key behaviors:
 - The database path is managed by the app: `/app/data` in Docker, `./data` otherwise
-- The GeoIP database (MaxMind GeoLite2-Country) is **auto-downloaded** on first startup
-- Auto-update is enabled by default (checks every 24h) with hot-reload -- no restart needed
+- The GeoIP database (MaxMind GeoLite2-Country) is **auto-downloaded** when GeoIP is enabled and the database is missing
+- Auto-update is optional; when enabled, the default interval is 24h and updates hot-reload without restart
 - Node region classification happens automatically during startup and on every reload
 - Nodes whose IP cannot be resolved or looked up are placed in the `other` category
 
@@ -235,7 +235,7 @@ Manage subscriptions from the WebUI subscription page or `/api/subscriptions`. E
 
 ## WebUI Dashboard
 
-Access at `http://your-server:9091` (configurable via the `management` section).
+Access at `http://your-server:9091`; set `MANAGEMENT_PORT` to change the management WebUI/API port at process start.
 
 Features:
 
@@ -244,7 +244,7 @@ Features:
 - **Subscriptions**: Manage multiple subscription sources, auto-update, manual refresh, and refresh status
 - **Diagnostics**: Connectivity testing and node state export
 - **Console**: Application logs from the in-memory ring buffer (last 1000 lines)
-- **Settings**: Runtime mode, listeners, DNS, GeoIP, health checks, and log rotation are editable from the browser
+- **Settings**: Runtime mode, listeners, DNS, GeoIP, health checks, external IP, SSL verification, and sing-box log level are editable from the browser
 
 Set `MANAGEMENT_PASSWORD` to require login. The management password is never stored in SQLite, logged, or returned by the settings API.
 

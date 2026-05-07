@@ -162,7 +162,7 @@ func (m *Manager) RefreshSource(id int64) error {
 	}
 	defer m.refreshMu.Unlock()
 
-	timeout := m.baseCfg.SubscriptionRefresh.Timeout
+	timeout := m.currentConfig().SubscriptionRefresh.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -529,7 +529,7 @@ func (m *Manager) fetchAllSubscriptions() ([]fetchedSourceNodes, []config.NodeCo
 	var allNodes []config.NodeConfig
 	var lastErr error
 
-	timeout := m.baseCfg.SubscriptionRefresh.Timeout
+	timeout := m.currentConfig().SubscriptionRefresh.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -574,7 +574,7 @@ func (m *Manager) subscriptionSources() ([]store.SubscriptionSource, error) {
 				URL:        u,
 				Enabled:    true,
 				AutoUpdate: true,
-				Interval:   m.baseCfg.SubscriptionRefresh.Interval,
+				Interval:   m.currentConfig().SubscriptionRefresh.Interval,
 			})
 		}
 		return sources, nil
@@ -603,7 +603,7 @@ func (m *Manager) autoUpdateSources() ([]store.SubscriptionSource, error) {
 			continue
 		}
 		if source.Interval <= 0 {
-			source.Interval = m.baseCfg.SubscriptionRefresh.Interval
+			source.Interval = m.currentConfig().SubscriptionRefresh.Interval
 			if source.Interval <= 0 {
 				source.Interval = time.Hour
 			}
@@ -651,8 +651,9 @@ func (m *Manager) fetchSubscription(subURL string, timeout time.Duration) ([]con
 
 // createNewConfig creates a new config with updated nodes while preserving other settings.
 func (m *Manager) createNewConfig(nodes []config.NodeConfig) *config.Config {
-	// Deep copy base config
-	newCfg := *m.baseCfg
+	// Start from the current runtime config so subscription refresh preserves
+	// settings changed from the WebUI after process startup.
+	newCfg := *m.currentConfig()
 
 	// Assign port numbers to nodes in multi-port mode
 	if newCfg.Mode == "multi-port" {
@@ -684,6 +685,22 @@ func (m *Manager) createNewConfig(nodes []config.NodeConfig) *config.Config {
 
 	newCfg.Nodes = nodes
 	return &newCfg
+}
+
+func (m *Manager) currentConfig() *config.Config {
+	if m != nil && m.boxMgr != nil {
+		if cfg := m.boxMgr.CurrentConfig(); cfg != nil {
+			return cfg
+		}
+	}
+	if m != nil && m.baseCfg != nil {
+		cloned := *m.baseCfg
+		if len(m.baseCfg.Nodes) > 0 {
+			cloned.Nodes = append([]config.NodeConfig(nil), m.baseCfg.Nodes...)
+		}
+		return &cloned
+	}
+	return &config.Config{}
 }
 
 type defaultLogger struct{}

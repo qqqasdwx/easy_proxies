@@ -1195,6 +1195,13 @@ func (m *Manager) CurrentPortMap() map[string]uint16 {
 	return m.cfg.BuildPortMap()
 }
 
+// CurrentConfig returns a copy of the current runtime config.
+func (m *Manager) CurrentConfig() *config.Config {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.copyConfigLocked()
+}
+
 func (m *Manager) applyStoreNodeState(ctx context.Context, cfg *config.Config) error {
 	if m.store == nil || cfg == nil {
 		return nil

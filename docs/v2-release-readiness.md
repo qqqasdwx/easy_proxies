@@ -1,38 +1,37 @@
 # V2 Merge Release Readiness
 
-Date: 2026-05-02
+Date: 2026-05-07
 
 ## Automated Checks
 
 | Check | Result |
 | --- | --- |
 | `go test ./...` | Passed |
-| `CGO_ENABLED=1 go test -race ./internal/config ./internal/monitor ./internal/store ./internal/subscription` | Passed |
-| `npm ci --prefix frontend` | Passed |
-| `npm run build --prefix frontend` | Passed |
-| `npm audit --omit=dev --prefix frontend` | Passed, 0 production vulnerabilities |
-| `docker build -t easy_proxies:merge-v2 .` | Passed |
+| `npm --prefix frontend run lint` | Passed |
+| `npm --prefix frontend run build` | Passed |
 | `git diff --check` | Passed |
-
-Note: race tests require CGO and a C compiler. This VM needed `gcc` and `libc6-dev` installed before the race run.
+| `docker build -t easy_proxies:dev .` | Passed |
+| `go test ./internal/subscription ./internal/boxmgr ./internal/monitor ./internal/config` | Passed |
+| Docker E2E with clean SQLite, host networking, local SOCKS upstream, and local HTTP target | Passed |
+| `pool`, `multi-port`, and `hybrid` proxy requests through Docker | Passed |
+| Subscription refresh after WebUI settings changes | Passed |
+| Restart persistence for runtime settings, manual nodes, and subscription nodes | Passed |
 
 ## Manual Scenario Matrix
 
 | Scenario | Status | Notes |
 | --- | --- | --- |
-| File mode startup | Ready for operator validation | Requires real node URIs in `nodes.txt` or `config.yaml`. |
-| Store mode startup | Ready for operator validation | `database_path: data/data.db`; keep `./data` mounted. |
-| `pool` / `multi-port` / `hybrid` modes | Ready for operator validation | Build/tests cover config generation; live proxy verification needs valid upstreams. |
-| `http` / `socks5` / `mixed` inbound protocols | Ready for operator validation | Config and builder tests cover protocol selection. |
-| Subscription refresh and reload | Ready for operator validation | Requires a real subscription URL. |
-| WebUI node add/disable/delete/batch delete | Ready for operator validation | API tests cover backend paths; browser flow needs live WebUI session. |
-| GeoIP region route | Ready for operator validation | Requires GeoIP DB download and reachable upstreams. |
-| Manual blacklist/release | Ready for operator validation | Backend API retained and React controls present. |
-| Log file output and WebUI log view | Ready for operator validation | React log panel reads `/api/logs`; file output depends on `log.output: file`. |
+| Clean Docker startup | Passed | Starts without `config.yaml` or `nodes.txt`; only SQLite is required. |
+| SQLite runtime persistence | Passed | Runtime settings, manual nodes, subscription sources, and subscription nodes survive container restart. |
+| `pool` / `multi-port` / `hybrid` modes | Passed | Verified with a real SOCKS upstream and HTTP proxy requests. |
+| Manual and subscription node coexistence | Passed | Both sources appear in node management and participate in reloads. |
+| Subscription refresh and reload | Passed | Refresh preserves the current runtime settings instead of reverting to startup defaults. |
+| Management settings safety | Passed | `/api/settings` exposes only `management.probe_target`; management port/password remain environment-only. |
+| WebUI settings model | Passed | Runtime mode, listeners, DNS, GeoIP, health checks, external IP, SSL verification, and sing-box log level are browser-managed. |
 
 ## Release Notes
 
-- React/Vite WebUI is now the embedded dashboard; Docker builds the frontend before the Go binary.
-- SQLite store persists WebUI-managed nodes, disabled state, sessions, and traffic totals.
-- `config.yaml` and `nodes.txt` remain supported; do not remove existing file-based workflows during upgrade.
-- Required mutable Docker mounts: `config.yaml`, `nodes.txt`, `logs/`, and `data/`.
+- SQLite is the only runtime persistence source. `config.yaml` and `nodes.txt` are not read, written, or migrated.
+- Required Docker mounts are `./data:/app/data` for SQLite/GeoIP data and `./logs:/app/logs` for logs.
+- `MANAGEMENT_PORT` controls the WebUI/API port at process start. `MANAGEMENT_PASSWORD` is read only from the process environment.
+- Subscription refresh now rebuilds sing-box from the current runtime settings, so WebUI changes are preserved across manual and automatic refreshes.
