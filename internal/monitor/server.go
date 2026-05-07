@@ -1033,8 +1033,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"strategy":         cfg.DNS.Strategy,
 			}
 			resp["management"] = map[string]any{
-				"enabled":      cfg.ManagementEnabled(),
-				"listen":       cfg.Management.Listen,
 				"probe_target": cfg.Management.ProbeTarget,
 			}
 			resp["geoip"] = map[string]any{
@@ -1080,8 +1078,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				BlacklistDuration string `json:"blacklist_duration"`
 			} `json:"pool,omitempty"`
 			Management *struct {
-				Enabled     *bool  `json:"enabled,omitempty"`
-				Listen      string `json:"listen"`
 				ProbeTarget string `json:"probe_target"`
 			} `json:"management,omitempty"`
 			Log *struct {
@@ -1215,10 +1211,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				s.cfgSrc.DNS.Strategy = dnsStrategy
 			}
 			if req.Management != nil {
-				if req.Management.Enabled != nil {
-					s.cfgSrc.Management.Enabled = req.Management.Enabled
-				}
-				s.cfgSrc.Management.Listen = req.Management.Listen
 				if req.Management.ProbeTarget != "" {
 					s.cfgSrc.Management.ProbeTarget = req.Management.ProbeTarget
 				}

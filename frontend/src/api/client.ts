@@ -125,8 +125,6 @@ interface RawSettings {
     strategy?: string
   }
   management?: {
-    enabled?: boolean
-    listen?: string
     probe_target?: string
   }
   geoip?: {
@@ -374,11 +372,6 @@ export async function updateSettings(settings: SettingsData): Promise<SettingsUp
         port: settings.dns_port,
         strategy: settings.dns_strategy,
       },
-      management: {
-        enabled: settings.management_enabled,
-        listen: settings.management_listen,
-        probe_target: settings.management_probe_target,
-      },
       geoip: {
         enabled: settings.geoip_enabled,
         listen: settings.geoip_listen,
@@ -433,8 +426,6 @@ function normalizeSettings(raw: RawSettings): SettingsData {
     dns_port: raw.dns?.port || 53,
     dns_strategy: raw.dns?.strategy || 'prefer_ipv4',
 
-    management_enabled: raw.management?.enabled ?? true,
-    management_listen: raw.management?.listen || '0.0.0.0:9091',
     management_probe_target: raw.management?.probe_target || raw.probe_target || '',
 
     geoip_enabled: raw.geoip?.enabled || false,

@@ -32,8 +32,6 @@ const defaultSettings: SettingsData = {
   dns_port: 53,
   dns_strategy: 'prefer_ipv4',
 
-  management_enabled: true,
-  management_listen: '0.0.0.0:9091',
   management_probe_target: '',
 
   geoip_enabled: false,
@@ -53,7 +51,7 @@ const sections: Array<{ id: SettingsSection; title: string; description: string 
   { id: 'runtime', title: '运行模式', description: '监听入口与代理池调度' },
   { id: 'network', title: '网络与路由', description: 'DNS 与 GeoIP' },
   { id: 'health', title: '健康检查', description: '探测目标、超时和并发' },
-  { id: 'system', title: '系统', description: '管理端、诊断与全局开关' },
+  { id: 'system', title: '系统', description: '诊断与全局开关' },
 ]
 
 const inputClass = 'input input-md w-full bg-base-200/60 focus:bg-base-100 border-base-300/70 focus:border-primary/60'
@@ -500,19 +498,7 @@ export default function SettingsPanel() {
 
   const renderSystemSection = () => (
     <>
-      <SectionTitle title="系统" description="管理端监听、导出地址和全局连接选项。" />
-
-      <Group title="管理端">
-        <label className="flex items-center justify-between gap-4 border border-base-300/70 rounded-lg px-4 py-3">
-          <span className="font-semibold">启用管理面板</span>
-          <input type="checkbox" className="toggle toggle-primary" checked={settings.management_enabled} onChange={e => updateField('management_enabled', e.target.checked)} />
-        </label>
-
-        <fieldset className="fieldset">
-          <legend className="fieldset-legend">监听地址</legend>
-          <input className={inputClass} placeholder="0.0.0.0:9091" value={settings.management_listen} onChange={e => updateField('management_listen', e.target.value)} />
-        </fieldset>
-      </Group>
+      <SectionTitle title="系统" description="配置诊断输出、导出地址和全局连接选项。" />
 
       <Group title="诊断">
         <fieldset className="fieldset">

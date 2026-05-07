@@ -114,8 +114,6 @@ export interface SettingsData {
   dns_strategy: string
 
   // Management
-  management_enabled: boolean
-  management_listen: string
   management_probe_target: string
 
   // GeoIP

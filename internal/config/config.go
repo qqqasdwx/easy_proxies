@@ -292,6 +292,9 @@ func SaveRuntime(ctx context.Context, st store.Store, cfg *Config) error {
 	}
 	saveCfg := *cfg
 	saveCfg.Nodes = nil
+	managementEnabled := true
+	saveCfg.Management.Enabled = &managementEnabled
+	saveCfg.Management.Listen = "0.0.0.0:9091"
 	saveCfg.Management.Password = ""
 	data, err := json.Marshal(&saveCfg)
 	if err != nil {
@@ -423,16 +426,12 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	if err := c.normalizeDNSConfig(); err != nil {
 		return err
 	}
-	if c.Management.Listen == "" {
-		c.Management.Listen = "0.0.0.0:9091"
-	}
+	c.Management.Listen = "0.0.0.0:9091"
 	if c.Management.ProbeTarget == "" {
 		c.Management.ProbeTarget = "www.apple.com:80"
 	}
-	if c.Management.Enabled == nil {
-		defaultEnabled := true
-		c.Management.Enabled = &defaultEnabled
-	}
+	managementEnabled := true
+	c.Management.Enabled = &managementEnabled
 	c.normalizeDatabasePath()
 	c.GeoIP.DatabasePath = DefaultGeoIPDatabasePath()
 	if c.GeoIP.AutoUpdateInterval <= 0 {
@@ -595,11 +594,10 @@ func replaceListenPort(listen string, port uint16) string {
 }
 
 // ManagementEnabled reports whether the monitoring endpoint should run.
+// The management server is intentionally always enabled; access is controlled
+// by MANAGEMENT_PORT and MANAGEMENT_PASSWORD at process/container startup.
 func (c *Config) ManagementEnabled() bool {
-	if c.Management.Enabled == nil {
-		return true
-	}
-	return *c.Management.Enabled
+	return true
 }
 
 // parseSubscriptionContent tries to parse subscription content in various formats (optimized)

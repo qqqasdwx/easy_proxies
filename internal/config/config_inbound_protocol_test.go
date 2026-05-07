@@ -65,6 +65,25 @@ func TestManagementEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestManagementCannotBeDisabledByPersistedConfig(t *testing.T) {
+	clearManagementEnv(t)
+
+	disabled := false
+	cfg := &Config{Management: ManagementConfig{Enabled: &disabled, Listen: "127.0.0.1:18080"}}
+	if err := cfg.NormalizeWithPortMap(nil); err != nil {
+		t.Fatalf("normalize config: %v", err)
+	}
+	if !cfg.ManagementEnabled() {
+		t.Fatal("management should always be enabled")
+	}
+	if cfg.Management.Enabled == nil || !*cfg.Management.Enabled {
+		t.Fatal("normalized management enabled flag should be true")
+	}
+	if cfg.Management.Listen != "0.0.0.0:9091" {
+		t.Fatalf("management listen = %q, want 0.0.0.0:9091", cfg.Management.Listen)
+	}
+}
+
 func TestDefaultInboundProtocolDefaultsToMixed(t *testing.T) {
 	clearManagementEnv(t)
 
