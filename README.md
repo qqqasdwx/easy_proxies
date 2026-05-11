@@ -1,343 +1,158 @@
 # Easy Proxies
 
-[简体中文](README_ZH.md)
+简体中文 | [English](README_EN.md)
 
-> A sing-box based proxy pool manager -- aggregate many upstream proxy nodes into one stable, health-checked, load-balanced local proxy endpoint.
+Easy Proxies 是一个基于 [sing-box](https://sing-box.sagernet.org/) 的代理池管理工具，用于把多个上游代理节点统一管理为稳定、可观测、可动态调整的本地代理服务。它适合需要批量维护节点、自动健康检查、订阅同步、按节点独立端口访问，以及通过 WebUI 管理运行配置的场景。
 
-## Features
+## 上游致谢与项目独立说明
 
-- **Three runtime modes**: `pool` (single-port load balancing), `multi-port` (one port per node), and `hybrid` (both simultaneously)
-- **Wide protocol support**: VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5, HTTP/HTTPS
-- **Automatic health checking** with configurable failure thresholds and blacklist duration, plus manual blacklist/release from the dashboard
-- **GeoIP region routing**: classify nodes by country and route traffic through a specific region via a dedicated HTTP proxy endpoint
-- **Database-backed node sources**: manual WebUI/API nodes and multiple subscription sources (Base64, plain text, Clash YAML) coexist in SQLite
-- **Subscription auto-refresh with hot-reload**: periodically fetches subscription updates and reloads without restart
-- **WebUI dashboard**: real-time node status, traffic charts, diagnostics, log console, and runtime settings management
-- **Management API**: RESTful endpoints for node CRUD, probing, blacklisting, subscription management, and config reload
-- **Configurable DNS resolver** with fallback servers and IPv4/IPv6 strategy control
-- **Runtime logging controls**: view recent application logs and adjust sing-box log verbosity from the WebUI
-- **Multi-platform Docker**: supports amd64 and arm64 with host networking
+本项目最初基于 [jasonwong1991/easy_proxies](https://github.com/jasonwong1991/easy_proxies) 开发，感谢原作者提供的基础实现和开源工作。
 
-## Quick Start
+自 **2026-05-11** 起，本仓库已作为独立项目维护。由于 v2.0.0 引入了破坏性更新，包括废弃 `config.yaml` / `nodes.txt`、改为 SQLite 作为唯一持久化来源、重构 WebUI 和运行配置模型，本项目已无法与上游仓库保持配置和行为兼容。后续如需引入上游修复，将以人工评估和移植的方式处理，不再直接同步上游分支。
 
-### 1. Start the Management UI
+## 核心特性
+
+- **三种运行模式**：`pool` 单入口代理池、`multi-port` 每节点独立端口、`hybrid` 混合模式。
+- **多协议节点支持**：VLESS、VMess、Trojan、Shadowsocks、Hysteria2、TUIC、AnyTLS、SOCKS5、HTTP/HTTPS。
+- **SQLite 持久化**：运行设置、手工节点、订阅源、订阅节点、端口分配、禁用状态、会话和流量统计均存储在数据库中。
+- **订阅管理**：支持多个订阅源，支持启用/禁用、自动更新、刷新间隔、手动刷新和刷新状态展示。
+- **节点管理**：手工节点和订阅节点共存；手工节点可编辑，订阅节点只读但可启停。
+- **结构化节点编辑器**：支持 URI 导入、sing-box outbound JSON 编辑、表单同步和每节点本地入站设置。
+- **健康检查与熔断**：自动探测节点可用性，支持失败黑名单、手动拉黑和手动解封。
+- **GeoIP 分区路由**：按节点地域分组，并提供独立 HTTP 代理入口按区域出站。
+- **WebUI 与管理 API**：提供节点监控、订阅管理、日志控制台、运行设置和诊断接口。
+- **Docker 优先部署**：默认仅暴露管理端口，运行数据挂载在 `./data` 和 `./logs`。
+
+## 快速开始
+
+### Docker Compose
 
 ```bash
-mkdir -p logs data
+mkdir -p data logs
 docker compose up -d
 ```
 
-The default container starts without `config.yaml` or `nodes.txt` and listens only on the management WebUI/API port.
+默认管理地址为：
+
+```text
+http://localhost:9091
+```
+
+管理端口和登录密码只通过环境变量设置：
 
 ```bash
 MANAGEMENT_PORT=19091 MANAGEMENT_PASSWORD='change-me' docker compose up -d
 ```
 
-### 2. Run from Source
+### 从源码运行
 
 ```bash
 go run ./cmd/easy_proxies --database data/data.db
 ```
 
-### 3. Access WebUI
+## 配置与持久化
 
-Open `http://localhost:9091` in your browser.
+Easy Proxies v2.0.0 起不再读取、写入或迁移 `config.yaml` 和 `nodes.txt`。启动流程为：
 
-## Configuration
-
-### Runtime Modes
-
-| Mode | Description |
-|------|-------------|
-| `pool` | Single port proxy pool. All nodes share one port with load balancing |
-| `multi-port` | One local port per node for direct access |
-| `hybrid` | Both pool + multi-port simultaneously |
-
-### Pool Scheduling
-
-| Algorithm | Description |
-|-----------|-------------|
-| `sequential` | Round-robin through healthy nodes |
-| `random` | Random node selection |
-| `balance` | Least-connections balancing |
-
-### Inbound Protocol
-
-`listener.protocol` controls the pool entrypoint and `multi_port.protocol` controls per-node entrypoints. Supported values are `mixed` (default, HTTP + SOCKS5), `http`, and `socks5`.
-
-### Runtime State
-
-Easy Proxies no longer reads or writes `config.yaml` or `nodes.txt`. Built-in defaults are loaded first, then runtime settings, nodes, subscriptions, sessions, disabled flags, ports, and traffic statistics are restored from SQLite.
-
-Use `--database data/data.db` for local development. In Docker, mount `./data:/app/data` to persist `/app/data/data.db` across restarts.
-
-`MANAGEMENT_PORT` overrides the management WebUI/API port at process start. `MANAGEMENT_PASSWORD` enables login and is read only from the environment; it is not a database or WebUI setting.
-
-See [SQLite Runtime Store](docs/sqlite-migration.md) for persistence and backup notes.
-
-## GeoIP Region Routing
-
-### Overview
-
-When GeoIP is enabled, Easy Proxies automatically classifies your proxy nodes by geographic region and provides a separate HTTP proxy endpoint that lets you route traffic through nodes in a specific country/region.
-
-### Supported Regions
-
-| Code | Region |
-|------|--------|
-| `jp` | Japan 🇯🇵 |
-| `kr` | South Korea 🇰🇷 |
-| `us` | United States 🇺🇸 |
-| `hk` | Hong Kong 🇭🇰 |
-| `tw` | Taiwan 🇹🇼 |
-| `sg` | Singapore 🇸🇬 |
-| `other` | All other regions |
-
-### Settings
-
-GeoIP is configured from the WebUI Settings page or `/api/settings`.
-
-| Field | Purpose |
-|-------|---------|
-| `geoip.enabled` | Enable region classification and the GeoIP router |
-| `geoip.listen` | Router listen address; defaults to the pool listener address when empty |
-| `geoip.port` | Router listen port; defaults to `1221` |
-| `geoip.auto_update_enabled` | Automatically refresh the GeoIP database |
-| `geoip.auto_update_interval` | Refresh interval, for example `24h` |
-
-The GeoIP router reuses the `listener.username` and `listener.password` for proxy authentication.
-
-Key behaviors:
-- The database path is managed by the app: `/app/data` in Docker, `./data` otherwise
-- The GeoIP database (MaxMind GeoLite2-Country) is **auto-downloaded** when GeoIP is enabled and the database is missing
-- Auto-update is optional; when enabled, the default interval is 24h and updates hot-reload without restart
-- Node region classification happens automatically during startup and on every reload
-- Nodes whose IP cannot be resolved or looked up are placed in the `other` category
-
-### How to Use
-
-The GeoIP router is an HTTP proxy that listens on its own port. You select a region by adding a path prefix to your request.
-
-#### HTTP Requests
-
-Format: `http://<geoip_host>:<geoip_port>/<region>/`
-
-```bash
-# Route through Japanese nodes
-curl -x http://user:pass@localhost:1221/jp/ http://example.com
-
-# Route through US nodes
-curl -x http://user:pass@localhost:1221/us/ http://example.com
-
-# Route through Hong Kong nodes
-curl -x http://user:pass@localhost:1221/hk/ http://example.com
-
-# Route through Singapore nodes
-curl -x http://user:pass@localhost:1221/sg/ http://example.com
-
-# No region prefix = use global pool (all nodes)
-curl -x http://user:pass@localhost:1221/ http://example.com
+```text
+内置默认值 -> SQLite 运行数据 -> 环境变量覆盖 -> 构建 sing-box 配置
 ```
 
-#### HTTPS Requests (CONNECT Tunnel)
-
-For HTTPS, the region prefix goes before the target host in the CONNECT request:
-
-```bash
-# Route HTTPS through Japanese nodes
-https_proxy=http://user:pass@localhost:1221/jp/ curl https://www.google.com
-
-# Route HTTPS through US nodes
-https_proxy=http://user:pass@localhost:1221/us/ curl https://www.google.com
-
-# No region prefix = use global pool
-https_proxy=http://user:pass@localhost:1221/ curl https://www.google.com
-```
-
-#### Using with Applications
-
-**Environment variables:**
-
-```bash
-# Use Japanese nodes for all traffic
-export http_proxy=http://user:pass@your-server:1221/jp/
-export https_proxy=http://user:pass@your-server:1221/jp/
-
-# Use global pool (all nodes)
-export http_proxy=http://user:pass@your-server:1221/
-export https_proxy=http://user:pass@your-server:1221/
-```
-
-**Browser proxy extensions (SwitchyOmega, FoxyProxy, etc.):**
-
-- Protocol: HTTP
-- Server: your-server-ip
-- Port: 1221
-- Username/Password: as configured in `listener`
-- For region-specific routing: set the proxy URL path to include the region prefix (e.g., `/jp/`)
-
-**Python requests:**
-
-```python
-import requests
-
-proxies = {
-    "http": "http://user:pass@your-server:1221/jp/",
-    "https": "http://user:pass@your-server:1221/jp/",
-}
-r = requests.get("http://example.com", proxies=proxies)
-```
-
-**Go net/http:**
-
-```go
-proxyURL, _ := url.Parse("http://user:pass@your-server:1221/jp/")
-client := &http.Client{
-    Transport: &http.Transport{
-        Proxy: http.ProxyURL(proxyURL),
-    },
-}
-resp, err := client.Get("http://example.com")
-```
-
-### How It Works
-
-1. On startup, each node's server IP is resolved and looked up in the MaxMind GeoLite2-Country database
-2. Nodes are grouped into per-region pools (`pool-jp`, `pool-kr`, `pool-us`, etc.) with independent health checking
-3. The GeoIP router listens on its own port and inspects the request path for a region prefix
-4. Matching requests are routed through the corresponding region pool; unmatched requests use the global pool
-5. Each region pool uses the same scheduling algorithm configured in the `pool` section
-6. DNS lookup results are cached to avoid repeated resolution on reload
-
-## Supported Protocols
-
-| Protocol | URI Schemes | Transport |
-|----------|-------------|-----------|
-| VLESS | `vless://` | TCP, WS, HTTP/2, gRPC, HTTPUpgrade; TLS/Reality/uTLS |
-| VMess | `vmess://` | WS, HTTP/2, gRPC, HTTPUpgrade; TLS/uTLS |
-| Trojan | `trojan://` | WS, HTTP/2, gRPC, HTTPUpgrade; TLS/Reality/uTLS |
-| Shadowsocks | `ss://` | Direct; SIP002 format |
-| Hysteria2 | `hysteria2://`, `hy2://` | QUIC-based |
-| TUIC | `tuic://` | QUIC-based |
-| AnyTLS | `anytls://` | TLS |
-| SOCKS5 | `socks5://`, `socks://` | Direct |
-| HTTP | `http://`, `https://` | Direct |
-
-## Node Sources
-
-### Manual Nodes
-
-Add nodes from the WebUI or `POST /api/nodes/config`. The editor accepts URI import, structured sing-box outbound JSON, and per-node inbound settings. Manual nodes are editable and persist in SQLite.
-
-### Subscriptions
-
-Manage subscriptions from the WebUI subscription page or `/api/subscriptions`. Each subscription has its own enabled flag, auto-update flag, interval, refresh status, and node count. Subscription nodes appear in node management, can be enabled/disabled, but are read-only for edits. Subscription refresh hot-reloads sing-box without restart.
-
-## WebUI Dashboard
-
-Access at `http://your-server:9091`; set `MANAGEMENT_PORT` to change the management WebUI/API port at process start.
-
-Features:
-
-- **React dashboard**: Real-time node status, traffic charts, region availability, latency monitoring
-- **Node Config**: Add/edit/delete/import manual nodes, view read-only subscription nodes, and batch enable/disable
-- **Subscriptions**: Manage multiple subscription sources, auto-update, manual refresh, and refresh status
-- **Diagnostics**: Connectivity testing and node state export
-- **Console**: Application logs from the in-memory ring buffer (last 1000 lines)
-- **Settings**: Runtime mode, listeners, DNS, GeoIP, health checks, external IP, SSL verification, and sing-box log level are editable from the browser
-
-Set `MANAGEMENT_PASSWORD` to require login. The management password is never stored in SQLite, logged, or returned by the settings API.
-
-## Management API
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/auth` | POST | Login with password |
-| `/api/settings` | GET, PUT | Read/update settings |
-| `/api/nodes` | GET | List all nodes with status |
-| `/api/nodes/{tag}/probe` | POST | Test node connectivity |
-| `/api/nodes/{tag}/blacklist` | POST | Manually blacklist a node |
-| `/api/nodes/{tag}/release` | POST | Release node from blacklist |
-| `/api/nodes/probe-all` | POST | Probe all nodes (SSE stream) |
-| `/api/nodes/traffic/stream` | GET | Stream aggregated traffic stats (SSE) |
-| `/api/export` | GET | Export node configuration |
-| `/api/import` | POST | Import proxy URI lines |
-| `/api/subscriptions` | GET, POST | List/create subscription sources |
-| `/api/subscriptions/{id}` | PUT, DELETE | Update/delete one subscription source |
-| `/api/subscriptions/{id}/refresh` | POST | Refresh one subscription source |
-| `/api/subscriptions/settings` | GET, PUT | Read/update subscription refresh strategy |
-| `/api/subscription/status` | GET | Check aggregate subscription status |
-| `/api/geoip/refresh` | POST | Force-refresh the GeoIP database |
-| `/api/nodes/config` | GET, POST | List/create node config |
-| `/api/nodes/config/{name}` | PUT, DELETE, PATCH | Update/delete/toggle one node |
-| `/api/nodes/config/batch-toggle` | POST | Batch enable/disable nodes |
-| `/api/nodes/config/batch-delete` | POST | Batch delete nodes |
-| `/api/logs` | GET | Read recent application logs |
-| `/api/reload` | POST | Reload sing-box instance |
-
-## Docker Deployment
-
-### docker-compose.yml
-
-The default setup exposes only the management port and persists SQLite/log data:
+Docker 部署时请持久化以下目录：
 
 ```yaml
-services:
-  easy_proxies:
-    image: ghcr.io/qqqasdwx/easy_proxies:latest
-    container_name: easy_proxies
-    restart: unless-stopped
-    environment:
-      MANAGEMENT_PORT: ${MANAGEMENT_PORT:-9091}
-      MANAGEMENT_PASSWORD: ${MANAGEMENT_PASSWORD:-}
-    ports:
-      - "${MANAGEMENT_PORT:-9091}:${MANAGEMENT_PORT:-9091}"
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
+volumes:
+  - ./data:/app/data
+  - ./logs:/app/logs
 ```
 
-### Important Notes
+关键环境变量：
 
-- **SQLite data**: keep `./data` mounted to preserve WebUI node state, sessions, and traffic totals across restarts.
-- **Management password**: set `MANAGEMENT_PASSWORD`; it is not a config item.
-- **Multi-platform**: Supports amd64 and arm64 architectures.
-- **Reload**: `/api/reload` and subscription refresh will interrupt active connections.
+| 变量 | 说明 |
+| --- | --- |
+| `MANAGEMENT_PORT` | 进程启动时覆盖 WebUI/API 管理端口 |
+| `MANAGEMENT_PASSWORD` | 启用 WebUI/API 登录密码；不会写入数据库、API 响应、前端表单或日志 |
 
-### Ports
+更多说明见 [SQLite Runtime Store](docs/sqlite-migration.md)。
 
-| Port | Usage |
-|------|-------|
-| 2323 | Pool proxy entry (pool/hybrid mode) |
-| 9091 | WebUI and Management API |
-| 1221 | GeoIP region router (when enabled, configurable) |
-| 24000+ | Multi-port mode (one per node) |
+## 运行模式
 
-## Changelog
+| 模式 | 说明 |
+| --- | --- |
+| `pool` | 所有可用节点共享一个本地 HTTP/SOCKS5 入口，并按调度策略选择出站节点 |
+| `multi-port` | 每个节点分配独立本地端口，适合需要固定访问某个节点的场景 |
+| `hybrid` | 同时启用代理池入口和每节点独立端口 |
 
-See [CHANGELOG.md](CHANGELOG.md) for version history.
+入口协议由 WebUI「系统设置」维护，支持 `mixed`、`http` 和 `socks5`。
 
-## Development
+## 节点与订阅
+
+手工节点可通过 WebUI 或 `POST /api/nodes/config` 添加。节点编辑器支持直接粘贴 URI、编辑 sing-box outbound JSON，并通过表单修改常用字段。
+
+订阅在 WebUI「订阅管理」中维护，也可通过 `/api/subscriptions` API 操作。每个订阅可以独立设置启用状态、自动更新和刷新间隔。订阅节点会展示在节点管理中，可以启停和查看，但不支持直接编辑。
+
+## GeoIP 分区路由
+
+启用 GeoIP 后，系统会下载并维护 GeoIP 数据库，将节点按 `jp`、`kr`、`us`、`hk`、`tw`、`sg`、`other` 分组。GeoIP 路由器提供独立 HTTP 代理入口，可通过路径选择区域：
+
+```bash
+curl -x http://user:pass@localhost:1221/jp/ http://example.com
+curl -x http://user:pass@localhost:1221/us/ http://example.com
+```
+
+数据库文件路径、最近更新时间和手动刷新按钮可在 WebUI 中查看。数据库实际存放位置由程序管理：Docker 中为 `/app/data`，本地运行为 `data/`。
+
+## 管理 API
+
+常用接口：
+
+- `POST /api/auth`
+- `GET|PUT /api/settings`
+- `GET /api/nodes`
+- `POST /api/nodes/{tag}/probe`
+- `POST /api/nodes/{tag}/blacklist`
+- `POST /api/nodes/{tag}/release`
+- `POST /api/nodes/probe-all`
+- `GET|POST /api/subscriptions`
+- `PUT|DELETE /api/subscriptions/{id}`
+- `POST /api/subscriptions/{id}/refresh`
+- `GET|POST /api/nodes/config`
+- `PUT|DELETE|PATCH /api/nodes/config/{name}`
+- `POST /api/geoip/refresh`
+- `GET /api/logs`
+- `POST /api/reload`
+
+## 开发与验证
 
 ```bash
 go test ./...
 npm ci --prefix frontend
-npm run build --prefix frontend
+npm --prefix frontend run lint
+npm --prefix frontend run build
 docker build -t easy_proxies:dev .
 ```
 
-Run the Docker proxy flow regression locally:
+运行 Docker 端到端回归：
 
 ```bash
 scripts/e2e/docker-proxy-flow.sh
 ```
 
-The script builds `easy_proxies:e2e`, starts a temporary HTTP target, a SOCKS upstream container, and an Easy Proxies container with a clean SQLite store. It verifies `pool`, `multi-port`, `hybrid`, subscription refresh, and restart persistence, then cleans up.
+该脚本会构建临时镜像，启动本地 HTTP 目标、SOCKS 上游和 Easy Proxies 容器，并验证 `pool`、`multi-port`、`hybrid`、订阅刷新和重启持久化。
+
+## 升级注意事项
+
+v2.0.0 是破坏性版本：
+
+- 不兼容旧版 `config.yaml` 和 `nodes.txt` 工作流。
+- 不会自动迁移旧配置文件。
+- 新部署请保留 `data/` 和 `logs/` 挂载目录。
+- 管理密码必须通过 `MANAGEMENT_PASSWORD` 设置。
 
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=qqqasdwx/easy_proxies&type=Date)](https://star-history.com/#qqqasdwx/easy_proxies&Date)
 
-## License
+## 许可证
 
 MIT License
