@@ -425,6 +425,25 @@ func TestCreateNodeRejectsGeoIPPortConflict(t *testing.T) {
 	}
 }
 
+func TestCreateNodeRejectsManagementPortConflict(t *testing.T) {
+	ctx := context.Background()
+	mgr := New(&config.Config{
+		Management: config.ManagementConfig{Listen: "0.0.0.0:9091"},
+	}, monitor.Config{})
+
+	_, err := mgr.CreateNode(ctx, config.NodeConfig{
+		Name: "management-conflict",
+		URI:  "http://user:pass@example.com:8080",
+		Port: 9091,
+	})
+	if !errors.Is(err, monitor.ErrNodeConflict) {
+		t.Fatalf("create error = %v, want node conflict", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "端口 9091 已被占用") {
+		t.Fatalf("create error = %v, want occupied port detail", err)
+	}
+}
+
 func TestFirstEnabledProxyPoolSkipsDisabledPools(t *testing.T) {
 	pool := firstEnabledProxyPool([]config.ProxyPoolConfig{
 		{

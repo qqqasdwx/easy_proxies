@@ -1940,8 +1940,13 @@ func (s *Server) validateProxyPoolListenPort(ctx context.Context, pool store.Pro
 	s.cfgMu.RLock()
 	cfg := s.cfgSrc
 	s.cfgMu.RUnlock()
-	if cfg != nil && cfg.GeoIP.Enabled && cfg.GeoIP.Port == pool.ListenPort {
-		return fmt.Errorf("监听端口 %d 已被 GeoIP 路由使用", pool.ListenPort)
+	if cfg != nil {
+		if port, ok := config.ListenPort(cfg.Management.Listen); ok && port == pool.ListenPort {
+			return fmt.Errorf("监听端口 %d 已被管理面板使用", pool.ListenPort)
+		}
+		if cfg.GeoIP.Enabled && cfg.GeoIP.Port == pool.ListenPort {
+			return fmt.Errorf("监听端口 %d 已被 GeoIP 路由使用", pool.ListenPort)
+		}
 	}
 
 	pools, err := s.store.ListProxyPools(ctx)

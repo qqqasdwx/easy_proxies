@@ -227,6 +227,44 @@ func TestHandleProxyPoolsRejectsGeoIPPortConflict(t *testing.T) {
 	}
 }
 
+func TestHandleProxyPoolsRejectsManagementPortConflict(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	server := &Server{store: st, cfgSrc: &config.Config{
+		Management: config.ManagementConfig{Listen: "0.0.0.0:9091"},
+	}, logger: log.Default()}
+	body := bytes.NewBufferString(`{
+		"name":"management-conflict",
+		"enabled":true,
+		"listen_address":"127.0.0.1",
+		"listen_port":9091,
+		"protocol":"mixed",
+		"mode":"sequential",
+		"failure_threshold":3,
+		"blacklist_duration":"24h",
+		"all_nodes":true
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pools", body)
+	rec := httptest.NewRecorder()
+
+	server.handleProxyPools(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("监听端口 9091 已被管理面板使用")) {
+		t.Fatalf("body = %s, want management port conflict", rec.Body.String())
+	}
+}
+
 func TestHandleProxyPoolDeleteRejectsLastPool(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {

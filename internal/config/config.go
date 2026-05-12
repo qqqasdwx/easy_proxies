@@ -497,6 +497,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	managementEnabled := true
 	c.Management.Enabled = &managementEnabled
 	c.normalizeDatabasePath()
+	if err := c.applyEnvironmentOverrides(); err != nil {
+		return err
+	}
 	c.GeoIP.DatabasePath = DefaultGeoIPDatabasePath()
 	if c.GeoIP.Port == 0 {
 		c.GeoIP.Port = 1221
@@ -522,17 +525,23 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	c.normalizeHealthCheckConfig()
 
 	// Build set of ports already assigned from portMap
-	usedPorts := make(map[uint16]bool)
+	usedPorts := make(map[uint16]string)
+	if port, ok := ListenPort(c.Management.Listen); ok {
+		usedPorts[port] = "management"
+	}
 	for _, pool := range c.ProxyPools {
 		if pool.Enabled && pool.Listener.Port > 0 {
-			usedPorts[pool.Listener.Port] = true
+			if owner := usedPorts[pool.Listener.Port]; owner != "" {
+				return fmt.Errorf("proxy pool %q port %d conflicts with %s", pool.Name, pool.Listener.Port, owner)
+			}
+			usedPorts[pool.Listener.Port] = pool.Name
 		}
 	}
 	if c.GeoIP.Enabled && c.GeoIP.Port > 0 {
-		if usedPorts[c.GeoIP.Port] {
-			return fmt.Errorf("geoip port %d conflicts with another listener", c.GeoIP.Port)
+		if owner := usedPorts[c.GeoIP.Port]; owner != "" {
+			return fmt.Errorf("geoip port %d conflicts with %s", c.GeoIP.Port, owner)
 		}
-		usedPorts[c.GeoIP.Port] = true
+		usedPorts[c.GeoIP.Port] = "geoip"
 	}
 
 	// First pass: assign ports from portMap for existing nodes
@@ -567,10 +576,10 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 			log.Printf("✅ Preserved port %d for node %q", existingPort, c.Nodes[idx].Name)
 		}
 		if c.Nodes[idx].Port > 0 {
-			if usedPorts[c.Nodes[idx].Port] {
-				return fmt.Errorf("node %q port %d conflicts with another listener", c.Nodes[idx].Name, c.Nodes[idx].Port)
+			if owner := usedPorts[c.Nodes[idx].Port]; owner != "" {
+				return fmt.Errorf("node %q port %d conflicts with %s", c.Nodes[idx].Name, c.Nodes[idx].Port, owner)
 			}
-			usedPorts[c.Nodes[idx].Port] = true
+			usedPorts[c.Nodes[idx].Port] = c.Nodes[idx].Name
 		}
 	}
 
@@ -591,10 +600,6 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	}
 
 	c.normalizeLogConfig()
-
-	if err := c.applyEnvironmentOverrides(); err != nil {
-		return err
-	}
 
 	return nil
 }
@@ -740,6 +745,19 @@ func replaceListenPort(listen string, port uint16) string {
 		}
 	}
 	return net.JoinHostPort(host, strconv.Itoa(int(port)))
+}
+
+// ListenPort extracts the TCP port from a host:port listen address.
+func ListenPort(listen string) (uint16, bool) {
+	_, portValue, err := net.SplitHostPort(strings.TrimSpace(listen))
+	if err != nil {
+		return 0, false
+	}
+	port, err := strconv.ParseUint(portValue, 10, 16)
+	if err != nil || port == 0 {
+		return 0, false
+	}
+	return uint16(port), true
 }
 
 // ManagementEnabled reports whether the monitoring endpoint should run.

@@ -1381,6 +1381,9 @@ func extractPortFromBindError(err error) uint16 {
 func reassignConflictingPort(cfg *config.Config, conflictPort uint16) bool {
 	// Build set of used ports
 	usedPorts := make(map[uint16]bool)
+	if port, ok := config.ListenPort(cfg.Management.Listen); ok {
+		usedPorts[port] = true
+	}
 	for _, proxyPool := range cfg.ProxyPools {
 		if proxyPool.Enabled && proxyPool.Listener.Port > 0 {
 			usedPorts[proxyPool.Listener.Port] = true
@@ -1448,6 +1451,9 @@ func (m *Manager) portInUseLocked(port uint16, currentName string) bool {
 	if port == 0 {
 		return false
 	}
+	if managementPort, ok := config.ListenPort(m.cfg.Management.Listen); ok && managementPort == port {
+		return true
+	}
 	if m.cfg.GeoIP.Enabled && m.cfg.GeoIP.Port == port {
 		return true
 	}
@@ -1473,6 +1479,9 @@ func (m *Manager) nextAvailablePortLocked() uint16 {
 		base = 24000
 	}
 	used := make(map[uint16]struct{}, len(m.cfg.Nodes))
+	if port, ok := config.ListenPort(m.cfg.Management.Listen); ok {
+		used[port] = struct{}{}
+	}
 	if m.cfg.GeoIP.Enabled && m.cfg.GeoIP.Port > 0 {
 		used[m.cfg.GeoIP.Port] = struct{}{}
 	}

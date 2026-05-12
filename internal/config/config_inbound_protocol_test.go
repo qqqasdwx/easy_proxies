@@ -262,3 +262,42 @@ func TestNormalizeWithPortMapRejectsGeoIPNodePortConflict(t *testing.T) {
 		t.Fatalf("normalize error = %v, want node port conflict", err)
 	}
 }
+
+func TestNormalizeWithPortMapRejectsManagementProxyPoolPortConflict(t *testing.T) {
+	clearManagementEnv(t)
+
+	cfg := Config{
+		ProxyPools: []ProxyPoolConfig{{
+			Name:    "management-conflict",
+			Enabled: true,
+			Listener: ListenerConfig{
+				Address:  "127.0.0.1",
+				Port:     9091,
+				Protocol: InboundProtocolMixed,
+			},
+			Mode:     "sequential",
+			AllNodes: true,
+		}},
+	}
+	err := cfg.NormalizeWithPortMap(nil)
+	if err == nil || !strings.Contains(err.Error(), "proxy pool \"management-conflict\" port 9091 conflicts with management") {
+		t.Fatalf("normalize error = %v, want management port conflict", err)
+	}
+}
+
+func TestNormalizeWithPortMapRejectsManagementEnvNodePortConflict(t *testing.T) {
+	clearManagementEnv(t)
+	t.Setenv(EnvManagementPort, "19091")
+
+	cfg := Config{
+		Nodes: []NodeConfig{{
+			Name: "node-1",
+			URI:  "http://user:pass@example.com:8080",
+			Port: 19091,
+		}},
+	}
+	err := cfg.NormalizeWithPortMap(nil)
+	if err == nil || !strings.Contains(err.Error(), "node \"node-1\" port 19091 conflicts with management") {
+		t.Fatalf("normalize error = %v, want management port conflict", err)
+	}
+}
