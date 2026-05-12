@@ -1645,40 +1645,31 @@ func atoiDefault(value string) int {
 }
 
 // printProxyLinks prints all proxy connection information at startup
-func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta) {
+func printProxyLinks(cfg *config.Config, _ map[string]poolout.MemberMeta) {
 	log.Println("")
 	log.Println("📡 Proxy Links:")
 	log.Println("═══════════════════════════════════════════════════════════════")
 
-	showPoolEntry := cfg.Mode == "pool" || cfg.Mode == "hybrid"
-	showMultiPort := cfg.Mode == "multi-port" || cfg.Mode == "hybrid"
-
-	if showPoolEntry {
-		// Pool mode: single entry point for all nodes
-		var auth string
-		if cfg.Listener.Username != "" {
-			auth = fmt.Sprintf("%s:%s@", cfg.Listener.Username, cfg.Listener.Password)
+	for _, proxyPool := range effectiveProxyPools(cfg) {
+		if !proxyPool.Enabled || proxyPool.Listener.Port == 0 {
+			continue
 		}
-		log.Printf("🌐 Pool Entry Point:")
-		for _, link := range proxyLinksForProtocol(cfg.Listener.Protocol, auth, cfg.Listener.Address, cfg.Listener.Port) {
+		var auth string
+		if proxyPool.Listener.Username != "" {
+			auth = fmt.Sprintf("%s:%s@", proxyPool.Listener.Username, proxyPool.Listener.Password)
+		}
+		log.Printf("🌐 Proxy Pool: %s", proxyPool.Name)
+		for _, link := range proxyLinksForProtocol(proxyPool.Listener.Protocol, auth, proxyPool.Listener.Address, proxyPool.Listener.Port) {
 			log.Printf("   %-7s %s", link.Label+":", link.URL)
 		}
 		log.Println("")
-		log.Printf("   Nodes in pool (%d):", len(metadata))
-		for _, meta := range metadata {
-			log.Printf("   • %s", meta.Name)
-		}
-		if showMultiPort {
-			log.Println("")
-		}
 	}
 
-	if showMultiPort {
-		// Multi-port mode: each node has its own port
-		log.Printf("🔌 Multi-Port Entry Points (%d nodes):", len(cfg.Nodes))
+	if hasNodeLocalListeners(cfg.Nodes) {
+		log.Printf("🔌 Node Local Entry Points:")
 		log.Println("")
 		for _, node := range cfg.Nodes {
-			if node.Disabled {
+			if node.Disabled || node.Port == 0 {
 				continue
 			}
 			var auth string
@@ -1692,7 +1683,11 @@ func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta)
 				auth = fmt.Sprintf("%s:%s@", username, password)
 			}
 			log.Printf("   [%d] %s", node.Port, node.Name)
-			for _, link := range proxyLinksForProtocol(cfg.MultiPort.Protocol, auth, cfg.MultiPort.Address, node.Port) {
+			protocol := cfg.MultiPort.Protocol
+			if node.InboundProtocol != "" {
+				protocol = node.InboundProtocol
+			}
+			for _, link := range proxyLinksForProtocol(protocol, auth, cfg.MultiPort.Address, node.Port) {
 				log.Printf("       %-7s %s", link.Label+":", link.URL)
 			}
 		}

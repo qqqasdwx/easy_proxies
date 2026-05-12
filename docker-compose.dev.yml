@@ -13,7 +13,7 @@ services:
       MANAGEMENT_PASSWORD: ${MANAGEMENT_PASSWORD:-}
     ports:
       - "${MANAGEMENT_PORT:-9091}:${MANAGEMENT_PORT:-9091}"
-      # Optional proxy listener ports for pool/hybrid and multi-port modes.
+      # Optional proxy listener ports configured from the WebUI.
       # - "2323:2323"
       # - "24000-24100:24000-24100"
     volumes:

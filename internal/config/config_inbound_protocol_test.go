@@ -185,3 +185,34 @@ func TestNormalizeWithPortMapNormalizesInboundProtocols(t *testing.T) {
 		t.Fatalf("multi-port protocol = %q, want %q", cfg.MultiPort.Protocol, InboundProtocolSOCKS5)
 	}
 }
+
+func TestNormalizeWithPortMapPreservesNodePortWithoutSelfConflict(t *testing.T) {
+	cfg := Config{
+		MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: 24000, Protocol: InboundProtocolMixed},
+		ProxyPools: []ProxyPoolConfig{{
+			Name:    "pool",
+			Enabled: true,
+			Listener: ListenerConfig{
+				Address:  "127.0.0.1",
+				Port:     2323,
+				Protocol: InboundProtocolMixed,
+			},
+			Mode:     "sequential",
+			AllNodes: true,
+		}},
+		Nodes: []NodeConfig{{
+			Name: "node-1",
+			URI:  "http://user:pass@example.com:8080",
+		}},
+	}
+	portMap := map[string]uint16{
+		cfg.Nodes[0].NodeKey(): 24000,
+	}
+
+	if err := cfg.NormalizeWithPortMap(portMap); err != nil {
+		t.Fatalf("normalize with port map: %v", err)
+	}
+	if cfg.Nodes[0].Port != 24000 {
+		t.Fatalf("node port = %d, want 24000", cfg.Nodes[0].Port)
+	}
+}

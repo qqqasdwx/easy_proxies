@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import type { ConfigNodeConfig, ConfigNodePayload, NodeSnapshot, NodesResponse } from '../types'
+import type { ConfigNodeConfig, ConfigNodePayload, NodeSnapshot, NodesResponse, SettingsData } from '../types'
 import {
   fetchConfigNodes, createConfigNode, updateConfigNode, deleteConfigNode,
   toggleConfigNode, batchToggleConfigNodes, batchDeleteConfigNodes, triggerReload,
   importNodes, exportProxies,
   fetchNodes, probeNode, releaseNode,
+  fetchSettings, updateSettings,
 } from '../api/client'
 import NodeEditorModal from './NodeEditorModal'
 
@@ -137,6 +138,8 @@ export default function ManagePanel() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [needReload, setNeedReload] = useState(false)
+  const [settings, setSettings] = useState<SettingsData | null>(null)
+  const [savingMultiPort, setSavingMultiPort] = useState(false)
 
   // Modal state
   const [modalOpen, setModalOpen] = useState(false)
@@ -184,12 +187,14 @@ export default function ManagePanel() {
   const loadData = useCallback(async () => {
     try {
       setError('')
-      const [configRes, monitorRes] = await Promise.all([
+      const [configRes, monitorRes, settingsRes] = await Promise.all([
         fetchConfigNodes(),
         fetchNodes().catch(() => null), // monitor data is optional
+        fetchSettings().catch(() => null),
       ])
       setConfigNodes(configRes.nodes || [])
       if (monitorRes) setMonitorData(monitorRes)
+      if (settingsRes) setSettings(settingsRes)
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载节点失败')
     } finally {
@@ -599,6 +604,25 @@ export default function ManagePanel() {
     }
   }
 
+  const updateMultiPortField = <K extends keyof SettingsData>(key: K, value: SettingsData[K]) => {
+    setSettings(prev => prev ? { ...prev, [key]: value } : prev)
+  }
+
+  const saveMultiPortDefaults = async () => {
+    if (!settings) return
+    setSavingMultiPort(true)
+    setError('')
+    try {
+      const res = await updateSettings(settings)
+      setSuccess(res.message || '多端口默认配置已保存')
+      if (res.need_reload) setNeedReload(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存多端口默认配置失败')
+    } finally {
+      setSavingMultiPort(false)
+    }
+  }
+
   // ---- Source label ----
   const sourceLabel = (source?: string) => {
     switch (source) {
@@ -691,6 +715,44 @@ export default function ManagePanel() {
           <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" /></svg>
           <span>配置已变更，请点击「重载配置」使其生效</span>
         </div>
+      )}
+
+      {settings && (
+        <section className="bg-base-100 border border-base-300/50 rounded-2xl p-4 shadow-sm">
+          <div className="flex flex-col xl:flex-row xl:items-end gap-4">
+            <div className="xl:w-44 shrink-0">
+              <h3 className="font-bold">多端口默认</h3>
+              <p className="text-xs text-base-content/50 mt-1">节点端口不为 0 时使用</p>
+            </div>
+            <fieldset className="fieldset flex-1 min-w-40">
+              <legend className="fieldset-legend">监听地址</legend>
+              <input className="input input-md w-full bg-base-200/60" value={settings.multi_port_address} onChange={e => updateMultiPortField('multi_port_address', e.target.value)} />
+            </fieldset>
+            <fieldset className="fieldset w-full xl:w-36">
+              <legend className="fieldset-legend">起始端口</legend>
+              <input type="number" className="input input-md w-full bg-base-200/60" min={1} max={65535} value={settings.multi_port_base_port} onChange={e => updateMultiPortField('multi_port_base_port', parseInt(e.target.value) || 24000)} />
+            </fieldset>
+            <fieldset className="fieldset w-full xl:w-44">
+              <legend className="fieldset-legend">协议</legend>
+              <select className="select select-md w-full bg-base-200/60" value={settings.multi_port_protocol} onChange={e => updateMultiPortField('multi_port_protocol', e.target.value)}>
+                <option value="mixed">mixed</option>
+                <option value="http">http</option>
+                <option value="socks5">socks5</option>
+              </select>
+            </fieldset>
+            <fieldset className="fieldset flex-1 min-w-36">
+              <legend className="fieldset-legend">默认用户名</legend>
+              <input className="input input-md w-full bg-base-200/60" value={settings.multi_port_username} onChange={e => updateMultiPortField('multi_port_username', e.target.value)} />
+            </fieldset>
+            <fieldset className="fieldset flex-1 min-w-36">
+              <legend className="fieldset-legend">默认密码</legend>
+              <input className="input input-md w-full bg-base-200/60" value={settings.multi_port_password} onChange={e => updateMultiPortField('multi_port_password', e.target.value)} />
+            </fieldset>
+            <button className="btn btn-primary" onClick={saveMultiPortDefaults} disabled={savingMultiPort}>
+              {savingMultiPort ? <span className="loading loading-spinner loading-sm"></span> : '保存'}
+            </button>
+          </div>
+        </section>
       )}
 
       {/* Filters Area */}

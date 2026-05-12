@@ -203,7 +203,7 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 // Reload gracefully switches to a new configuration.
-// For multi-port mode, we must stop the old instance first to release ports.
+// Node-local listeners require stopping the old instance first to release ports.
 func (m *Manager) Reload(newCfg *config.Config) error {
 	if newCfg == nil {
 		return errors.New("new config is nil")
@@ -223,8 +223,8 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 	m.logger.Infof("reloading with %d nodes", len(newCfg.Nodes))
 	m.FlushStatsToStore(ctx)
 
-	// For multi-port mode, we must close old instance first to release ports
-	// This causes a brief interruption but avoids port conflicts
+	// Close the old instance first so node-local listener ports are released.
+	// This causes a brief interruption but avoids port conflicts.
 	if oldBox != nil {
 		m.logger.Infof("stopping old instance to release ports...")
 		if err := oldBox.Close(); err != nil {

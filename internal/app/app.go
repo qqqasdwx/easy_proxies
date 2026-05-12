@@ -46,16 +46,7 @@ func RunWithStore(ctx context.Context, cfg *config.Config, dataStore store.Store
 	}
 
 	// Build monitor config
-	proxyUsername := cfg.Listener.Username
-	proxyPassword := cfg.Listener.Password
-	if len(cfg.ProxyPools) > 0 {
-		proxyUsername = cfg.ProxyPools[0].Listener.Username
-		proxyPassword = cfg.ProxyPools[0].Listener.Password
-	}
-	if proxyUsername == "" && cfg.MultiPort.Username != "" {
-		proxyUsername = cfg.MultiPort.Username
-		proxyPassword = cfg.MultiPort.Password
-	}
+	proxyUsername, proxyPassword := monitorProxyCredentials(cfg)
 
 	monitorCfg := monitor.Config{
 		Enabled:       cfg.ManagementEnabled(),
@@ -143,6 +134,21 @@ func RunWithStore(ctx context.Context, cfg *config.Config, dataStore store.Store
 	}
 
 	return nil
+}
+
+func monitorProxyCredentials(cfg *config.Config) (string, string) {
+	if cfg == nil {
+		return "", ""
+	}
+	for _, proxyPool := range cfg.ProxyPools {
+		if proxyPool.Enabled && proxyPool.Listener.Username != "" {
+			return proxyPool.Listener.Username, proxyPool.Listener.Password
+		}
+	}
+	if cfg.MultiPort.Username != "" {
+		return cfg.MultiPort.Username, cfg.MultiPort.Password
+	}
+	return cfg.Listener.Username, cfg.Listener.Password
 }
 
 func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store) error {

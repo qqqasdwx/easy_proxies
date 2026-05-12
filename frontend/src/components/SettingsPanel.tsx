@@ -1,30 +1,19 @@
 import { useState, useEffect, type ReactNode } from 'react'
 import type { SettingsData } from '../types'
-import { fetchSettings, updateSettings, triggerReload, refreshGeoIPDatabase } from '../api/client'
+import { fetchSettings, updateSettings, triggerReload } from '../api/client'
 
-type SettingsSection = 'runtime' | 'network' | 'health' | 'system'
+type SettingsSection = 'network' | 'health' | 'system'
 
 const defaultSettings: SettingsData = {
-  mode: 'pool',
   log_level: 'info',
   external_ip: '',
   skip_cert_verify: false,
-
-  listener_address: '0.0.0.0',
-  listener_port: 2323,
-  listener_protocol: 'mixed',
-  listener_username: '',
-  listener_password: '',
 
   multi_port_address: '0.0.0.0',
   multi_port_base_port: 24000,
   multi_port_protocol: 'mixed',
   multi_port_username: '',
   multi_port_password: '',
-
-  pool_mode: 'sequential',
-  pool_failure_threshold: 3,
-  pool_blacklist_duration: '24h0m0s',
 
   dns_enabled: false,
   dns_server: '223.5.5.5',
@@ -48,8 +37,7 @@ const defaultSettings: SettingsData = {
 }
 
 const sections: Array<{ id: SettingsSection; title: string; description: string }> = [
-  { id: 'runtime', title: '运行模式', description: '监听入口与代理池调度' },
-  { id: 'network', title: '网络与路由', description: 'DNS 与 GeoIP' },
+  { id: 'network', title: '网络', description: 'DNS 解析与地址策略' },
   { id: 'health', title: '健康检查', description: '探测目标、超时和并发' },
   { id: 'system', title: '系统', description: '诊断与全局开关' },
 ]
@@ -79,11 +67,10 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
 export default function SettingsPanel() {
   const [settings, setSettings] = useState<SettingsData>(defaultSettings)
   const [savedSettings, setSavedSettings] = useState<SettingsData>(defaultSettings)
-  const [activeSection, setActiveSection] = useState<SettingsSection>('runtime')
+  const [activeSection, setActiveSection] = useState<SettingsSection>('network')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [reloading, setReloading] = useState(false)
-  const [refreshingGeoIP, setRefreshingGeoIP] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [needReload, setNeedReload] = useState(false)
@@ -143,26 +130,6 @@ export default function SettingsPanel() {
     }
   }
 
-  const handleRefreshGeoIP = async () => {
-    setRefreshingGeoIP(true)
-    setError('')
-    setSuccess('')
-    try {
-      const res = await refreshGeoIPDatabase()
-      setSettings(s => ({
-        ...s,
-        geoip_database_path: res.path || s.geoip_database_path,
-        geoip_database_updated_at: res.database_updated_at || s.geoip_database_updated_at,
-      }))
-      setSuccess(res.message || 'GeoIP 数据库已重新下载')
-      if (res.need_reload) setNeedReload(true)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'GeoIP 数据库刷新失败')
-    } finally {
-      setRefreshingGeoIP(false)
-    }
-  }
-
   const updateField = <K extends keyof SettingsData>(key: K, value: SettingsData[K]) => {
     setSettings(s => {
       const updated = { ...s, [key]: value }
@@ -190,16 +157,7 @@ export default function SettingsPanel() {
     )
   }
 
-  const showPoolConfig = settings.mode === 'pool' || settings.mode === 'hybrid'
-  const showMultiPortConfig = settings.mode === 'multi-port' || settings.mode === 'hybrid'
   const activeMeta = sections.find(section => section.id === activeSection) || sections[0]
-
-  const formatGeoIPUpdatedAt = (value: string) => {
-    if (!value) return '未下载'
-    const date = new Date(value)
-    if (Number.isNaN(date.getTime())) return value
-    return date.toLocaleString()
-  }
 
   const updateFallbackServers = (value: string) => {
     updateField(
@@ -211,153 +169,9 @@ export default function SettingsPanel() {
     )
   }
 
-  const renderRuntimeSection = () => (
-    <>
-      <SectionTitle title="运行模式" description="配置代理入口、端口和代理池调度。Pool 调度跟随共享监听入口。" />
-
-      <Group title="运行模式">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {[
-            { value: 'pool', label: 'Pool', desc: '单端口代理池' },
-            { value: 'multi-port', label: 'Multi-port', desc: '每节点独立端口' },
-            { value: 'hybrid', label: 'Hybrid', desc: '两种入口并存' },
-          ].map(option => (
-            <button
-              key={option.value}
-              type="button"
-              className={`text-left rounded-lg border px-4 py-3 transition-colors ${
-                settings.mode === option.value
-                  ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-base-300/70 bg-base-100 hover:bg-base-200/60'
-              }`}
-              onClick={() => updateField('mode', option.value)}
-            >
-              <span className="block font-bold">{option.label}</span>
-              <span className="block text-xs text-base-content/55 mt-1">{option.desc}</span>
-            </button>
-          ))}
-        </div>
-      </Group>
-
-      {showPoolConfig && (
-        <Group title="Pool 监听">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">监听地址</legend>
-              <input className={inputClass} value={settings.listener_address} onChange={e => updateField('listener_address', e.target.value)} />
-            </fieldset>
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">监听端口</legend>
-              <input
-                type="number"
-                className={inputClass}
-                value={settings.listener_port}
-                min={1}
-                max={65535}
-                onChange={e => updateField('listener_port', parseInt(e.target.value) || 0)}
-              />
-            </fieldset>
-          </div>
-
-          <fieldset className="fieldset">
-            <legend className="fieldset-legend">监听协议</legend>
-            <select className={selectClass} value={settings.listener_protocol} onChange={e => updateField('listener_protocol', e.target.value)}>
-              <option value="http">http</option>
-              <option value="socks5">socks5</option>
-              <option value="mixed">mixed (HTTP + SOCKS5)</option>
-            </select>
-          </fieldset>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">代理用户名</legend>
-              <input className={inputClass} placeholder="可选，留空表示无验证" value={settings.listener_username} onChange={e => updateField('listener_username', e.target.value)} />
-            </fieldset>
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">代理密码</legend>
-              <input className={inputClass} placeholder="可选，留空表示无验证" value={settings.listener_password} onChange={e => updateField('listener_password', e.target.value)} />
-            </fieldset>
-          </div>
-        </Group>
-      )}
-
-      {showPoolConfig && (
-        <Group title="Pool 调度">
-          <fieldset className="fieldset">
-            <legend className="fieldset-legend">调度模式</legend>
-            <select className={selectClass} value={settings.pool_mode} onChange={e => updateField('pool_mode', e.target.value)}>
-              <option value="sequential">sequential - 顺序轮询</option>
-              <option value="random">random - 随机选择</option>
-              <option value="balance">balance - 最小连接数负载均衡</option>
-            </select>
-          </fieldset>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">失败阈值</legend>
-              <input
-                type="number"
-                className={inputClass}
-                value={settings.pool_failure_threshold}
-                min={1}
-                onChange={e => updateField('pool_failure_threshold', parseInt(e.target.value) || 1)}
-              />
-            </fieldset>
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">黑名单持续时间</legend>
-              <input className={inputClass} placeholder="例如: 24h, 1h30m" value={settings.pool_blacklist_duration} onChange={e => updateField('pool_blacklist_duration', e.target.value)} />
-            </fieldset>
-          </div>
-        </Group>
-      )}
-
-      {showMultiPortConfig && (
-        <Group title="多端口入口">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">监听地址</legend>
-              <input className={inputClass} value={settings.multi_port_address} onChange={e => updateField('multi_port_address', e.target.value)} />
-            </fieldset>
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">起始端口</legend>
-              <input
-                type="number"
-                className={inputClass}
-                value={settings.multi_port_base_port}
-                min={1}
-                max={65535}
-                onChange={e => updateField('multi_port_base_port', parseInt(e.target.value) || 0)}
-              />
-            </fieldset>
-          </div>
-
-          <fieldset className="fieldset">
-            <legend className="fieldset-legend">监听协议</legend>
-            <select className={selectClass} value={settings.multi_port_protocol} onChange={e => updateField('multi_port_protocol', e.target.value)}>
-              <option value="http">http</option>
-              <option value="socks5">socks5</option>
-              <option value="mixed">mixed (HTTP + SOCKS5)</option>
-            </select>
-          </fieldset>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">默认用户名</legend>
-              <input className={inputClass} placeholder="可选" value={settings.multi_port_username} onChange={e => updateField('multi_port_username', e.target.value)} />
-            </fieldset>
-            <fieldset className="fieldset">
-              <legend className="fieldset-legend">默认密码</legend>
-              <input className={inputClass} placeholder="可选" value={settings.multi_port_password} onChange={e => updateField('multi_port_password', e.target.value)} />
-            </fieldset>
-          </div>
-        </Group>
-      )}
-    </>
-  )
-
   const renderNetworkSection = () => (
     <>
-      <SectionTitle title="网络与路由" description="配置 DNS 解析、GeoIP 数据库和地域路由入口。" />
+      <SectionTitle title="网络" description="配置 DNS 解析和地址选择策略。" />
 
       <Group title="DNS">
         <label className="flex items-center justify-between gap-4 border border-base-300/70 rounded-lg px-4 py-3">
@@ -397,66 +211,6 @@ export default function SettingsPanel() {
         )}
       </Group>
 
-      <Group title="GeoIP">
-        <label className="flex items-center justify-between gap-4 border border-base-300/70 rounded-lg px-4 py-3">
-          <div>
-            <span className="font-semibold block">启用 GeoIP</span>
-            <span className="text-xs text-base-content/55">按地域自动分组节点并启用地域路由入口</span>
-          </div>
-          <input type="checkbox" className="toggle toggle-primary" checked={settings.geoip_enabled} onChange={e => updateField('geoip_enabled', e.target.checked)} />
-        </label>
-
-        {settings.geoip_enabled && (
-          <div className="space-y-4">
-            <div className="border border-base-300/70 rounded-lg px-4 py-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 space-y-2">
-                  <div>
-                    <div className="text-xs font-semibold text-base-content/50 mb-1">数据库文件</div>
-                    <div className="font-mono text-sm text-base-content/80 break-all">{settings.geoip_database_path || '-'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold text-base-content/50 mb-1">最近更新时间</div>
-                    <div className="text-sm text-base-content/70">{formatGeoIPUpdatedAt(settings.geoip_database_updated_at)}</div>
-                  </div>
-                </div>
-                <button type="button" className="btn btn-ghost btn-sm btn-square shrink-0" onClick={handleRefreshGeoIP} disabled={refreshingGeoIP} title="重新下载 GeoIP 数据库">
-                  {refreshingGeoIP ? (
-                    <span className="loading loading-spinner loading-xs"></span>
-                  ) : (
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <fieldset className="fieldset">
-                <legend className="fieldset-legend">路由监听地址</legend>
-                <input className={inputClass} value={settings.geoip_listen} placeholder={settings.listener_address || '0.0.0.0'} onChange={e => updateField('geoip_listen', e.target.value)} />
-              </fieldset>
-              <fieldset className="fieldset">
-                <legend className="fieldset-legend">路由监听端口</legend>
-                <input type="number" className={inputClass} value={settings.geoip_port} min={1} max={65535} onChange={e => updateField('geoip_port', parseInt(e.target.value) || 1221)} />
-              </fieldset>
-            </div>
-
-            <label className="flex items-center justify-between gap-4 border border-base-300/70 rounded-lg px-4 py-3">
-              <span className="font-semibold">自动更新数据库</span>
-              <input type="checkbox" className="toggle toggle-primary" checked={settings.geoip_auto_update_enabled} onChange={e => updateField('geoip_auto_update_enabled', e.target.checked)} />
-            </label>
-
-            {settings.geoip_auto_update_enabled && (
-              <fieldset className="fieldset">
-                <legend className="fieldset-legend">更新间隔</legend>
-                <input className={inputClass} placeholder="24h" value={settings.geoip_auto_update_interval} onChange={e => updateField('geoip_auto_update_interval', e.target.value)} />
-              </fieldset>
-            )}
-          </div>
-        )}
-      </Group>
     </>
   )
 
@@ -532,8 +286,6 @@ export default function SettingsPanel() {
 
   const renderActiveSection = () => {
     switch (activeSection) {
-      case 'runtime':
-        return renderRuntimeSection()
       case 'network':
         return renderNetworkSection()
       case 'health':
@@ -541,7 +293,7 @@ export default function SettingsPanel() {
       case 'system':
         return renderSystemSection()
       default:
-        return renderRuntimeSection()
+        return renderNetworkSection()
     }
   }
 
@@ -597,7 +349,7 @@ export default function SettingsPanel() {
             )}
             {needReload && (
               <div role="alert" className="alert alert-warning alert-soft text-sm">
-                <span>配置已保存，运行模式、监听端口、代理池、DNS、GeoIP 和 sing-box 日志级别等运行配置可能需要重载后完全生效。</span>
+                <span>配置已保存，DNS、健康检查和 sing-box 日志级别等运行配置可能需要重载后完全生效。</span>
               </div>
             )}
           </div>

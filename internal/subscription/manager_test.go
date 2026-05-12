@@ -60,6 +60,9 @@ func TestCreateNewConfigUsesCurrentBoxManagerSettings(t *testing.T) {
 	if next.MultiPort.BasePort != 24040 {
 		t.Fatalf("multi-port base = %d, want 24040", next.MultiPort.BasePort)
 	}
+	if next.Nodes[0].Port != 0 {
+		t.Fatalf("subscription node port = %d, want opt-in zero port", next.Nodes[0].Port)
+	}
 	if next.SubscriptionRefresh.Timeout != 45*time.Second {
 		t.Fatalf("subscription timeout = %s, want 45s", next.SubscriptionRefresh.Timeout)
 	}

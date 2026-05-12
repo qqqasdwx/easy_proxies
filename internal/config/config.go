@@ -555,7 +555,6 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		nodeKey := c.Nodes[idx].NodeKey()
 		if existingPort, ok := portMap[nodeKey]; ok && existingPort > 0 {
 			c.Nodes[idx].Port = existingPort
-			usedPorts[existingPort] = true
 			log.Printf("✅ Preserved port %d for node %q", existingPort, c.Nodes[idx].Name)
 		}
 		if c.Nodes[idx].Port > 0 {
@@ -568,13 +567,7 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 
 	// Second pass: keep node local listeners opt-in. A zero port means the node
 	// does not expose a dedicated local inbound.
-	portCursor := c.MultiPort.BasePort
 	for idx := range c.Nodes {
-		if c.Nodes[idx].Port == 0 {
-			portCursor++
-		}
-
-		// Apply default credentials
 		if c.Nodes[idx].Port > 0 {
 			if c.Nodes[idx].Username == "" {
 				c.Nodes[idx].Username = c.MultiPort.Username

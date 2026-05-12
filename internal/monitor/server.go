@@ -167,15 +167,23 @@ func (s *Server) SetConfig(cfg *config.Config) {
 		s.cfg.ExternalIP = cfg.ExternalIP
 		s.cfg.ProbeTarget = cfg.Management.ProbeTarget
 		s.cfg.SkipCertVerify = cfg.SkipCertVerify
-		// Sync proxy credentials based on mode
-		if cfg.Mode == "multi-port" || cfg.Mode == "hybrid" {
-			s.cfg.ProxyUsername = cfg.MultiPort.Username
-			s.cfg.ProxyPassword = cfg.MultiPort.Password
-		} else {
-			s.cfg.ProxyUsername = cfg.Listener.Username
-			s.cfg.ProxyPassword = cfg.Listener.Password
+		s.cfg.ProxyUsername, s.cfg.ProxyPassword = monitorProxyCredentials(cfg)
+	}
+}
+
+func monitorProxyCredentials(cfg *config.Config) (string, string) {
+	if cfg == nil {
+		return "", ""
+	}
+	for _, proxyPool := range cfg.ProxyPools {
+		if proxyPool.Enabled && proxyPool.Listener.Username != "" {
+			return proxyPool.Listener.Username, proxyPool.Listener.Password
 		}
 	}
+	if cfg.MultiPort.Username != "" {
+		return cfg.MultiPort.Username, cfg.MultiPort.Password
+	}
+	return cfg.Listener.Username, cfg.Listener.Password
 }
 
 // getSettings returns current dynamic settings (thread-safe).
@@ -745,7 +753,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var poolAuth string
-		if proxyPool.Listener.Username != "" && proxyPool.Listener.Password != "" {
+		if proxyPool.Listener.Username != "" {
 			poolAuth = fmt.Sprintf("%s:%s@", proxyPool.Listener.Username, proxyPool.Listener.Password)
 		}
 		poolURIs := exportProxyURIsForProtocol(proxyPool.Listener.Protocol, scheme, poolAuth, poolAddr, proxyPool.Listener.Port)
@@ -769,7 +777,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var geoAuth string
-		if len(proxyPools) > 0 && proxyPools[0].Listener.Username != "" && proxyPools[0].Listener.Password != "" {
+		if len(proxyPools) > 0 && proxyPools[0].Listener.Username != "" {
 			geoAuth = fmt.Sprintf("%s:%s@", proxyPools[0].Listener.Username, proxyPools[0].Listener.Password)
 		}
 		regions := geoip.AllRegions()
@@ -810,7 +818,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			}
 
 			var authPart string
-			if multiPortCfg.Username != "" && multiPortCfg.Password != "" {
+			if multiPortCfg.Username != "" {
 				authPart = fmt.Sprintf("%s:%s@", multiPortCfg.Username, multiPortCfg.Password)
 			}
 			uris := exportProxyURIsForProtocol(multiPortCfg.Protocol, scheme, authPart, listenAddr, snap.Port)
@@ -994,26 +1002,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 		if cfg != nil {
-			resp["mode"] = cfg.Mode
 			resp["log_level"] = cfg.LogLevel
-			resp["listener"] = map[string]any{
-				"address":  cfg.Listener.Address,
-				"port":     cfg.Listener.Port,
-				"protocol": cfg.Listener.Protocol,
-				"username": cfg.Listener.Username,
-				"password": cfg.Listener.Password,
-			}
 			resp["multi_port"] = map[string]any{
 				"address":   cfg.MultiPort.Address,
 				"base_port": cfg.MultiPort.BasePort,
 				"protocol":  cfg.MultiPort.Protocol,
 				"username":  cfg.MultiPort.Username,
 				"password":  cfg.MultiPort.Password,
-			}
-			resp["pool"] = map[string]any{
-				"mode":               cfg.Pool.Mode,
-				"failure_threshold":  cfg.Pool.FailureThreshold,
-				"blacklist_duration": cfg.Pool.BlacklistDuration.String(),
 			}
 			resp["dns"] = map[string]any{
 				"enabled":          cfg.DNS.Enabled,
@@ -1047,26 +1042,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			ProbeTarget    string `json:"probe_target"`
 			LogLevel       string `json:"log_level,omitempty"`
 			SkipCertVerify bool   `json:"skip_cert_verify"`
-			Mode           string `json:"mode,omitempty"`
-			Listener       *struct {
-				Address  string `json:"address"`
-				Port     uint16 `json:"port"`
-				Protocol string `json:"protocol"`
-				Username string `json:"username"`
-				Password string `json:"password"`
-			} `json:"listener,omitempty"`
-			MultiPort *struct {
+			MultiPort      *struct {
 				Address  string `json:"address"`
 				BasePort uint16 `json:"base_port"`
 				Protocol string `json:"protocol"`
 				Username string `json:"username"`
 				Password string `json:"password"`
 			} `json:"multi_port,omitempty"`
-			Pool *struct {
-				Mode              string `json:"mode"`
-				FailureThreshold  int    `json:"failure_threshold"`
-				BlacklistDuration string `json:"blacklist_duration"`
-			} `json:"pool,omitempty"`
 			Management *struct {
 				ProbeTarget string `json:"probe_target"`
 			} `json:"management,omitempty"`
@@ -1107,16 +1089,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		extIP := strings.TrimSpace(req.ExternalIP)
 		probeTarget := strings.TrimSpace(req.ProbeTarget)
 
-		mode := ""
-		if req.Mode != "" {
-			normalized, err := config.NormalizeMode(req.Mode)
-			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				writeJSON(w, map[string]any{"error": err.Error()})
-				return
-			}
-			mode = normalized
-		}
 		logLevel := ""
 		if req.LogLevel != "" {
 			normalized, err := config.NormalizeLogLevel(req.LogLevel)
@@ -1138,16 +1110,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			dnsStrategy = normalized
 		}
 
-		var listenerProtocol string
-		if req.Listener != nil && req.Listener.Protocol != "" {
-			normalized, err := config.NormalizeInboundProtocol(req.Listener.Protocol)
-			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				writeJSON(w, map[string]any{"error": err.Error()})
-				return
-			}
-			listenerProtocol = normalized
-		}
 		var multiPortProtocol string
 		if req.MultiPort != nil && req.MultiPort.Protocol != "" {
 			normalized, err := config.NormalizeInboundProtocol(req.MultiPort.Protocol)
@@ -1157,26 +1119,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			multiPortProtocol = normalized
-		}
-		poolMode := ""
-		var blacklistDuration time.Duration
-		if req.Pool != nil {
-			normalized, err := config.NormalizePoolMode(req.Pool.Mode)
-			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				writeJSON(w, map[string]any{"error": err.Error()})
-				return
-			}
-			poolMode = normalized
-			if req.Pool.BlacklistDuration != "" {
-				d, err := parsePositiveDuration(req.Pool.BlacklistDuration, "黑名单持续时间")
-				if err != nil {
-					w.WriteHeader(http.StatusBadRequest)
-					writeJSON(w, map[string]any{"error": err.Error()})
-					return
-				}
-				blacklistDuration = d
-			}
 		}
 		var geoIPAutoUpdateInterval time.Duration
 		if req.GeoIP != nil && req.GeoIP.AutoUpdateInterval != "" {
@@ -1229,9 +1171,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if next.GeoIP.AutoUpdateInterval <= 0 {
 			next.GeoIP.AutoUpdateInterval = 24 * time.Hour
 		}
-		if mode != "" {
-			next.Mode = mode
-		}
 		if logLevel != "" {
 			next.LogLevel = logLevel
 		}
@@ -1251,15 +1190,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			next.Log.Compress = req.Log.Compress
 		}
-		if req.Listener != nil {
-			next.Listener.Address = req.Listener.Address
-			next.Listener.Port = req.Listener.Port
-			if listenerProtocol != "" {
-				next.Listener.Protocol = listenerProtocol
-			}
-			next.Listener.Username = req.Listener.Username
-			next.Listener.Password = req.Listener.Password
-		}
 		if req.MultiPort != nil {
 			next.MultiPort.Address = req.MultiPort.Address
 			next.MultiPort.BasePort = req.MultiPort.BasePort
@@ -1268,13 +1198,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			next.MultiPort.Username = req.MultiPort.Username
 			next.MultiPort.Password = req.MultiPort.Password
-		}
-		if req.Pool != nil {
-			next.Pool.Mode = poolMode
-			next.Pool.FailureThreshold = req.Pool.FailureThreshold
-			if blacklistDuration > 0 {
-				next.Pool.BlacklistDuration = blacklistDuration
-			}
 		}
 		if req.DNS != nil {
 			next.DNS.Enabled = req.DNS.Enabled
@@ -1326,13 +1249,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.cfg.ExternalIP = next.ExternalIP
 		s.cfg.ProbeTarget = next.Management.ProbeTarget
 		s.cfg.SkipCertVerify = next.SkipCertVerify
-		if next.Mode == "multi-port" || next.Mode == "hybrid" {
-			s.cfg.ProxyUsername = next.MultiPort.Username
-			s.cfg.ProxyPassword = next.MultiPort.Password
-		} else {
-			s.cfg.ProxyUsername = next.Listener.Username
-			s.cfg.ProxyPassword = next.Listener.Password
-		}
+		s.cfg.ProxyUsername, s.cfg.ProxyPassword = monitorProxyCredentials(&next)
 		if req.HealthCheck != nil && s.mgr != nil {
 			s.mgr.StartPeriodicHealthCheck(next.HealthCheck.Interval, next.HealthCheck.Timeout, next.HealthCheck.Concurrency)
 		}
@@ -1960,6 +1877,10 @@ func proxyPoolsResponse(pools []store.ProxyPool) []map[string]any {
 }
 
 func proxyPoolResponse(pool store.ProxyPool) map[string]any {
+	nodeIDs := pool.NodeIDs
+	if nodeIDs == nil {
+		nodeIDs = []int64{}
+	}
 	return map[string]any{
 		"id":                 pool.ID,
 		"name":               pool.Name,
@@ -1973,7 +1894,7 @@ func proxyPoolResponse(pool store.ProxyPool) map[string]any {
 		"failure_threshold":  pool.FailureThreshold,
 		"blacklist_duration": pool.BlacklistDuration.String(),
 		"all_nodes":          pool.AllNodes,
-		"node_ids":           pool.NodeIDs,
+		"node_ids":           nodeIDs,
 		"created_at":         pool.CreatedAt,
 		"updated_at":         pool.UpdatedAt,
 	}
