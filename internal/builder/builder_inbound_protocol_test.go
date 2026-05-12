@@ -223,6 +223,26 @@ func TestBuildSkipsDisabledNodes(t *testing.T) {
 	}
 }
 
+func TestProxyPoolMembersEmptyExplicitSelectionDoesNotSelectAll(t *testing.T) {
+	members := proxyPoolMembers(config.ProxyPoolConfig{
+		AllNodes: false,
+		NodeIDs:  nil,
+	}, []string{"node-1", "node-2"}, map[int64]string{
+		1: "node-1",
+		2: "node-2",
+	})
+	if len(members) != 0 {
+		t.Fatalf("members = %+v, want empty explicit selection", members)
+	}
+
+	allMembers := proxyPoolMembers(config.ProxyPoolConfig{
+		AllNodes: true,
+	}, []string{"node-1", "node-2"}, nil)
+	if len(allMembers) != 2 {
+		t.Fatalf("all members = %+v, want all nodes", allMembers)
+	}
+}
+
 func TestBuildIncludesDNSOptions(t *testing.T) {
 	cfg := &config.Config{
 		Mode: "pool",

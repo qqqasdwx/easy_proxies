@@ -527,8 +527,11 @@ func proxyPoolRegionTag(pool config.ProxyPoolConfig, region string) string {
 }
 
 func proxyPoolMembers(pool config.ProxyPoolConfig, allTags []string, nodeIDToTag map[int64]string) []string {
-	if pool.AllNodes || len(pool.NodeIDs) == 0 {
+	if pool.AllNodes {
 		return append([]string(nil), allTags...)
+	}
+	if len(pool.NodeIDs) == 0 {
+		return nil
 	}
 	members := make([]string, 0, len(pool.NodeIDs))
 	seen := make(map[string]struct{}, len(pool.NodeIDs))
