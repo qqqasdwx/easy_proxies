@@ -1775,6 +1775,28 @@ func (s *Server) handleProxyPoolItem(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, map[string]any{"proxy_pool": proxyPoolResponse(next), "message": "代理池已保存", "need_reload": true})
 	case http.MethodDelete:
+		current, err := s.store.GetProxyPool(r.Context(), id)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("读取代理池失败: %v", err)})
+			return
+		}
+		if current == nil {
+			w.WriteHeader(http.StatusNotFound)
+			writeJSON(w, map[string]any{"error": "代理池不存在"})
+			return
+		}
+		pools, err := s.store.ListProxyPools(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("读取代理池失败: %v", err)})
+			return
+		}
+		if len(pools) <= 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "至少需要保留一个代理池"})
+			return
+		}
 		if err := s.store.DeleteProxyPool(r.Context(), id); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]any{"error": fmt.Sprintf("删除代理池失败: %v", err)})

@@ -106,6 +106,39 @@ func TestHandleProxyPoolsPersistsKnownNodeIDs(t *testing.T) {
 	}
 }
 
+func TestHandleProxyPoolDeleteRejectsLastPool(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	pools, err := st.ListProxyPools(t.Context())
+	if err != nil {
+		t.Fatalf("list pools: %v", err)
+	}
+	if len(pools) != 1 {
+		t.Fatalf("default pools = %d, want 1", len(pools))
+	}
+
+	server := &Server{store: st, cfgSrc: &config.Config{}, logger: log.Default()}
+	req := httptest.NewRequest(http.MethodDelete, "/api/proxy-pools/"+jsonNumber(pools[0].ID), nil)
+	rec := httptest.NewRecorder()
+
+	server.handleProxyPoolItem(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("至少需要保留一个代理池")) {
+		t.Fatalf("body = %s, want last pool error", rec.Body.String())
+	}
+}
+
 func jsonNumber(value int64) string {
 	return strconv.FormatInt(value, 10)
 }
