@@ -1180,7 +1180,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		next.ExternalIP = extIP
 		next.Management.ProbeTarget = probeTarget
 		next.SkipCertVerify = req.SkipCertVerify
-		next.GeoIP.Enabled = req.GeoIP != nil && req.GeoIP.Enabled
 		if next.GeoIP.Enabled {
 			next.GeoIP.DatabasePath = config.DefaultGeoIPDatabasePath()
 		}
@@ -1226,6 +1225,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			next.Management.ProbeTarget = req.Management.ProbeTarget
 		}
 		if req.GeoIP != nil {
+			next.GeoIP.Enabled = req.GeoIP.Enabled
 			next.GeoIP.DatabasePath = config.DefaultGeoIPDatabasePath()
 			next.GeoIP.Listen = req.GeoIP.Listen
 			next.GeoIP.Port = req.GeoIP.Port
