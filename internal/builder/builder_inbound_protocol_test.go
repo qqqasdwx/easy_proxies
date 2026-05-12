@@ -305,6 +305,37 @@ func TestBuildUsesSelectedProxyPoolNodeIDs(t *testing.T) {
 	}
 }
 
+func TestGeoIPListenAddressUsesFirstEnabledProxyPool(t *testing.T) {
+	cfg := &config.Config{
+		Listener: config.ListenerConfig{Address: "10.0.0.1"},
+		GeoIP:    config.GeoIPConfig{Enabled: true},
+	}
+	got := geoIPListenAddress(cfg, []config.ProxyPoolConfig{
+		{
+			Name:    "disabled",
+			Enabled: false,
+			Listener: config.ListenerConfig{
+				Address: "192.0.2.10",
+			},
+		},
+		{
+			Name:    "enabled",
+			Enabled: true,
+			Listener: config.ListenerConfig{
+				Address: "127.0.0.1",
+			},
+		},
+	})
+	if got != "127.0.0.1" {
+		t.Fatalf("geoip listen address = %q, want first enabled proxy pool address", got)
+	}
+
+	cfg.GeoIP.Listen = "127.0.0.2"
+	if got := geoIPListenAddress(cfg, nil); got != "127.0.0.2" {
+		t.Fatalf("geoip explicit listen address = %q, want 127.0.0.2", got)
+	}
+}
+
 func TestBuildIncludesDNSOptions(t *testing.T) {
 	cfg := &config.Config{
 		Mode: "pool",

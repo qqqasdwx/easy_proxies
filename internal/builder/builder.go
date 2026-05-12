@@ -377,14 +377,7 @@ func Build(cfg *config.Config) (option.Options, error) {
 		if geoipPort == 0 {
 			geoipPort = 1221 // Default GeoIP router port
 		}
-		geoipListen := cfg.GeoIP.Listen
-		if geoipListen == "" {
-			if len(proxyPools) > 0 {
-				geoipListen = proxyPools[0].Listener.Address
-			} else {
-				geoipListen = cfg.Listener.Address
-			}
-		}
+		geoipListen := geoIPListenAddress(cfg, proxyPools)
 		log.Println("🌐 GeoIP Region Routing Enabled:")
 		log.Printf("   Access via: http://%s:%d/{pool}/{region}", geoipListen, geoipPort)
 		log.Println("   Available regions: /jp, /kr, /us, /hk, /tw, /sg, /other")
@@ -485,6 +478,24 @@ func geoIPResolverConfig(cfg config.DNSConfig) geoip.ResolverConfig {
 		Port:            cfg.Port,
 		Strategy:        cfg.Strategy,
 	}
+}
+
+func geoIPListenAddress(cfg *config.Config, proxyPools []config.ProxyPoolConfig) string {
+	if cfg == nil {
+		return "0.0.0.0"
+	}
+	if cfg.GeoIP.Listen != "" {
+		return cfg.GeoIP.Listen
+	}
+	for _, proxyPool := range proxyPools {
+		if proxyPool.Enabled && proxyPool.Listener.Address != "" {
+			return proxyPool.Listener.Address
+		}
+	}
+	if cfg.Listener.Address != "" {
+		return cfg.Listener.Address
+	}
+	return "0.0.0.0"
 }
 
 func effectiveProxyPools(cfg *config.Config) []config.ProxyPoolConfig {
