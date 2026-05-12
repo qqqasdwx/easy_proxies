@@ -28,13 +28,15 @@ type PoolDialer interface {
 
 // Router handles HTTP proxy requests with path-based region routing
 type Router struct {
-	cfg        RouterConfig
-	pools      map[string]PoolDialer          // region -> dialer
-	global     PoolDialer                     // default pool for requests without region path
-	transports map[PoolDialer]*http.Transport // cached transports per dialer
-	server     *http.Server
-	mu         sync.RWMutex
-	logger     *log.Logger
+	cfg          RouterConfig
+	pools        map[string]PoolDialer            // region -> dialer
+	poolRoutes   map[string]map[string]PoolDialer // pool path -> region -> dialer
+	defaultRoute string
+	global       PoolDialer                     // default pool for requests without region path
+	transports   map[PoolDialer]*http.Transport // cached transports per dialer
+	server       *http.Server
+	mu           sync.RWMutex
+	logger       *log.Logger
 }
 
 // NewRouter creates a new GeoIP router
@@ -45,6 +47,7 @@ func NewRouter(cfg RouterConfig, logger *log.Logger) *Router {
 	return &Router{
 		cfg:        cfg,
 		pools:      make(map[string]PoolDialer),
+		poolRoutes: make(map[string]map[string]PoolDialer),
 		transports: make(map[PoolDialer]*http.Transport),
 		logger:     logger,
 	}
@@ -66,6 +69,37 @@ func (r *Router) SetGlobalPool(dialer PoolDialer) {
 	r.global = dialer
 	// Clear transport cache since pools changed
 	r.transports = make(map[PoolDialer]*http.Transport)
+}
+
+// SetPoolRoute registers a dialer for /{pool}/{region}. An empty region is
+// the pool's global route.
+func (r *Router) SetPoolRoute(poolPath, region string, dialer PoolDialer) {
+	poolPath = strings.Trim(strings.TrimSpace(poolPath), "/")
+	region = strings.Trim(strings.TrimSpace(region), "/")
+	if poolPath == "" || dialer == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.poolRoutes[poolPath] == nil {
+		r.poolRoutes[poolPath] = make(map[string]PoolDialer)
+	}
+	r.poolRoutes[poolPath][region] = dialer
+	r.transports = make(map[PoolDialer]*http.Transport)
+}
+
+// SetDefaultRoute sets the pool path used by legacy /{region} and bare requests.
+func (r *Router) SetDefaultRoute(poolPath string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.defaultRoute = strings.Trim(strings.TrimSpace(poolPath), "/")
+}
+
+// DefaultRoute returns the configured default pool path.
+func (r *Router) DefaultRoute() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.defaultRoute
 }
 
 // Start starts the GeoIP router HTTP server
@@ -136,13 +170,23 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	// Extract region from path
-	region, targetHost := r.parseRequest(req)
+	// Extract pool/region from path
+	poolPath, region, targetHost := r.parseRequest(req)
 
 	// Get the appropriate pool
 	r.mu.RLock()
 	var dialer PoolDialer
-	if region != "" {
+	if poolPath != "" {
+		if routes := r.poolRoutes[poolPath]; routes != nil {
+			if region != "" {
+				dialer = routes[region]
+			}
+			if dialer == nil {
+				dialer = routes[""]
+			}
+		}
+	}
+	if dialer == nil && region != "" {
 		dialer = r.pools[region]
 	}
 	if dialer == nil {
@@ -162,41 +206,62 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// parseRequest extracts region and target host from the request
-func (r *Router) parseRequest(req *http.Request) (region, targetHost string) {
+// parseRequest extracts optional pool path, region, and target host from the request.
+func (r *Router) parseRequest(req *http.Request) (poolPath, region, targetHost string) {
 	// For CONNECT requests, the host is in req.Host
 	// For regular requests, check the path prefix
 
 	if req.Method == http.MethodConnect {
-		// CONNECT requests: check if host starts with region prefix
-		// e.g., CONNECT jp/example.com:443 or just example.com:443
 		host := req.Host
+		parts := strings.SplitN(host, "/", 3)
+		if len(parts) >= 3 && r.hasPoolRoute(parts[0]) {
+			return parts[0], parts[1], parts[2]
+		}
 		for _, reg := range AllRegions() {
 			prefix := reg + "/"
 			if strings.HasPrefix(host, prefix) {
-				return reg, strings.TrimPrefix(host, prefix)
+				return r.DefaultRoute(), reg, strings.TrimPrefix(host, prefix)
 			}
 		}
-		return "", host
+		return r.DefaultRoute(), "", host
 	}
 
 	// For regular HTTP requests, check URL path
 	path := req.URL.Path
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) >= 2 && r.hasPoolRoute(parts[0]) {
+		req.URL.Path = "/" + strings.Join(parts[2:], "/")
+		if req.URL.Path == "/" && strings.HasSuffix(path, "/") {
+			req.URL.Path = "/"
+		}
+		return parts[0], parts[1], req.Host
+	}
+	if len(parts) >= 1 && r.hasPoolRoute(parts[0]) {
+		req.URL.Path = "/"
+		return parts[0], "", req.Host
+	}
 	for _, reg := range AllRegions() {
 		prefix := "/" + reg + "/"
 		if strings.HasPrefix(path, prefix) {
 			// Rewrite the path
 			req.URL.Path = "/" + strings.TrimPrefix(path, prefix)
-			return reg, req.Host
+			return r.DefaultRoute(), reg, req.Host
 		}
 		// Also check for exact match like /jp
 		if path == "/"+reg {
 			req.URL.Path = "/"
-			return reg, req.Host
+			return r.DefaultRoute(), reg, req.Host
 		}
 	}
 
-	return "", req.Host
+	return r.DefaultRoute(), "", req.Host
+}
+
+func (r *Router) hasPoolRoute(poolPath string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.poolRoutes[poolPath]
+	return ok
 }
 
 // handleConnect handles HTTPS CONNECT tunneling

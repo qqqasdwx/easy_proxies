@@ -151,6 +151,43 @@ ALTER TABLE nodes ADD COLUMN outbound_json TEXT NOT NULL DEFAULT '';
 ALTER TABLE nodes ADD COLUMN inbound_protocol TEXT NOT NULL DEFAULT '';
 `,
 		},
+		{
+			Version:     6,
+			Description: "add independent proxy pools",
+			Up: `
+CREATE TABLE IF NOT EXISTS proxy_pools (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    name               TEXT    NOT NULL DEFAULT '',
+    enabled            INTEGER NOT NULL DEFAULT 1,
+    listen_address     TEXT    NOT NULL DEFAULT '0.0.0.0',
+    listen_port        INTEGER NOT NULL DEFAULT 2323,
+    protocol           TEXT    NOT NULL DEFAULT 'mixed',
+    username           TEXT    NOT NULL DEFAULT '',
+    password           TEXT    NOT NULL DEFAULT '',
+    mode               TEXT    NOT NULL DEFAULT 'sequential',
+    failure_threshold  INTEGER NOT NULL DEFAULT 3,
+    blacklist_duration INTEGER NOT NULL DEFAULT 86400000000000,
+    all_nodes          INTEGER NOT NULL DEFAULT 1,
+    created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(listen_port)
+);
+
+CREATE TABLE IF NOT EXISTS proxy_pool_nodes (
+    pool_id INTEGER NOT NULL REFERENCES proxy_pools(id) ON DELETE CASCADE,
+    node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    PRIMARY KEY (pool_id, node_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_proxy_pools_enabled ON proxy_pools(enabled);
+CREATE INDEX IF NOT EXISTS idx_proxy_pool_nodes_node_id ON proxy_pool_nodes(node_id);
+
+INSERT OR IGNORE INTO proxy_pools
+    (id, name, enabled, listen_address, listen_port, protocol, mode, failure_threshold, blacklist_duration, all_nodes)
+VALUES
+    (1, '默认代理池', 1, '0.0.0.0', 2323, 'mixed', 'sequential', 3, 86400000000000, 1);
+`,
+		},
 	}
 }
 

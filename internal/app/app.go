@@ -48,7 +48,11 @@ func RunWithStore(ctx context.Context, cfg *config.Config, dataStore store.Store
 	// Build monitor config
 	proxyUsername := cfg.Listener.Username
 	proxyPassword := cfg.Listener.Password
-	if cfg.Mode == "multi-port" || cfg.Mode == "hybrid" {
+	if len(cfg.ProxyPools) > 0 {
+		proxyUsername = cfg.ProxyPools[0].Listener.Username
+		proxyPassword = cfg.ProxyPools[0].Listener.Password
+	}
+	if proxyUsername == "" && cfg.MultiPort.Username != "" {
 		proxyUsername = cfg.MultiPort.Username
 		proxyPassword = cfg.MultiPort.Password
 	}

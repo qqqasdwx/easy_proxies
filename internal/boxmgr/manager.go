@@ -559,40 +559,59 @@ func (m *Manager) startGeoIPRouter(ctx context.Context, cfg *config.Config) {
 	if geoipPort == 0 {
 		geoipPort = 1221 // Default GeoIP router port
 	}
-	// Avoid conflict with the pool listener port
-	if geoipPort == cfg.Listener.Port {
-		geoipPort = 1221
-		if geoipPort == cfg.Listener.Port {
-			geoipPort = cfg.Listener.Port + 1
+	for _, proxyPool := range cfg.ProxyPools {
+		if proxyPool.Enabled && geoipPort == proxyPool.Listener.Port {
+			geoipPort = 1221
+			if geoipPort == proxyPool.Listener.Port {
+				geoipPort = proxyPool.Listener.Port + 1
+			}
+			log.Printf("⚠️  GeoIP port conflicts with proxy pool port %d, using %d instead", proxyPool.Listener.Port, geoipPort)
+			break
 		}
-		log.Printf("⚠️  GeoIP port conflicts with listener port %d, using %d instead", cfg.Listener.Port, geoipPort)
 	}
 	geoipListen := cfg.GeoIP.Listen
 	if geoipListen == "" {
-		geoipListen = cfg.Listener.Address
+		if len(cfg.ProxyPools) > 0 {
+			geoipListen = cfg.ProxyPools[0].Listener.Address
+		} else {
+			geoipListen = cfg.Listener.Address
+		}
 	}
 
+	username, password := "", ""
+	if len(cfg.ProxyPools) > 0 {
+		username = cfg.ProxyPools[0].Listener.Username
+		password = cfg.ProxyPools[0].Listener.Password
+	}
 	routerCfg := geoip.RouterConfig{
 		Listen:   geoipListen,
 		Port:     geoipPort,
-		Username: cfg.Listener.Username,
-		Password: cfg.Listener.Password,
+		Username: username,
+		Password: password,
 	}
 
 	router := geoip.NewRouter(routerCfg, nil)
 
-	// Register region pool dialers
-	for _, region := range geoip.AllRegions() {
-		poolTag := fmt.Sprintf("pool-%s", region)
-		if dialer, ok := pool.GetDialer(poolTag); ok {
-			router.SetPool(region, dialer)
-			log.Printf("   GeoIP: registered pool %s for region /%s", poolTag, region)
+	for _, proxyPool := range cfg.ProxyPools {
+		if !proxyPool.Enabled {
+			continue
 		}
-	}
-
-	// Register global pool dialer (for requests without region path)
-	if dialer, ok := pool.GetDialer(pool.Tag); ok {
-		router.SetGlobalPool(dialer)
+		poolPath := fmt.Sprintf("%d", proxyPool.ID)
+		globalTag := fmt.Sprintf("proxy-pool-%d", proxyPool.ID)
+		if dialer, ok := pool.GetDialer(globalTag); ok {
+			router.SetPoolRoute(poolPath, "", dialer)
+			if router.DefaultRoute() == "" {
+				router.SetDefaultRoute(poolPath)
+				router.SetGlobalPool(dialer)
+			}
+		}
+		for _, region := range geoip.AllRegions() {
+			poolTag := fmt.Sprintf("proxy-pool-%d-%s", proxyPool.ID, region)
+			if dialer, ok := pool.GetDialer(poolTag); ok {
+				router.SetPoolRoute(poolPath, region, dialer)
+				log.Printf("   GeoIP: registered pool %s for path /%s/%s", poolTag, poolPath, region)
+			}
+		}
 	}
 
 	if err := router.Start(ctx); err != nil {
@@ -1335,8 +1354,10 @@ func extractPortFromBindError(err error) uint16 {
 func reassignConflictingPort(cfg *config.Config, conflictPort uint16) bool {
 	// Build set of used ports
 	usedPorts := make(map[uint16]bool)
-	if cfg.Mode == "hybrid" {
-		usedPorts[cfg.Listener.Port] = true
+	for _, proxyPool := range cfg.ProxyPools {
+		if proxyPool.Enabled && proxyPool.Listener.Port > 0 {
+			usedPorts[proxyPool.Listener.Port] = true
+		}
 	}
 	for _, node := range cfg.Nodes {
 		usedPorts[node.Port] = true
@@ -1488,11 +1509,8 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 		node.InboundProtocol = protocol
 	}
 
-	// Handle multi-port mode specifics
-	if m.cfg.Mode == "multi-port" {
-		if node.Port == 0 {
-			node.Port = m.nextAvailablePortLocked()
-		} else if m.portInUseLocked(node.Port, currentName) {
+	if node.Port > 0 {
+		if m.portInUseLocked(node.Port, currentName) {
 			return config.NodeConfig{}, fmt.Errorf("%w: 端口 %d 已被占用", monitor.ErrNodeConflict, node.Port)
 		}
 		if node.Username == "" {
@@ -1506,6 +1524,7 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 
 func (m *Manager) storeNodeToConfig(node store.Node) config.NodeConfig {
 	return config.NodeConfig{
+		ID:              node.ID,
 		Name:            node.Name,
 		URI:             node.URI,
 		OutboundJSON:    node.OutboundJSON,

@@ -134,6 +134,23 @@ type Store interface {
 	// ReplaceSubscriptionSources atomically replaces the configured subscription sources.
 	ReplaceSubscriptionSources(ctx context.Context, sources []SubscriptionSource) error
 
+	// --- Proxy pools ---
+
+	// ListProxyPools returns all configured proxy pools with their node membership.
+	ListProxyPools(ctx context.Context) ([]ProxyPool, error)
+
+	// GetProxyPool returns a proxy pool by ID.
+	GetProxyPool(ctx context.Context, id int64) (*ProxyPool, error)
+
+	// CreateProxyPool inserts a proxy pool and returns its assigned ID.
+	CreateProxyPool(ctx context.Context, pool *ProxyPool) error
+
+	// UpdateProxyPool updates an existing proxy pool and replaces membership.
+	UpdateProxyPool(ctx context.Context, pool *ProxyPool) error
+
+	// DeleteProxyPool removes a proxy pool by ID.
+	DeleteProxyPool(ctx context.Context, id int64) error
+
 	// --- Lifecycle ---
 
 	// Close releases all resources held by the store.
@@ -253,6 +270,25 @@ type SubscriptionSource struct {
 	LastError   string        `json:"last_error"`
 	CreatedAt   time.Time     `json:"created_at"`
 	UpdatedAt   time.Time     `json:"updated_at"`
+}
+
+// ProxyPool represents an independent local proxy pool listener.
+type ProxyPool struct {
+	ID                int64         `json:"id"`
+	Name              string        `json:"name"`
+	Enabled           bool          `json:"enabled"`
+	ListenAddress     string        `json:"listen_address"`
+	ListenPort        uint16        `json:"listen_port"`
+	Protocol          string        `json:"protocol"`
+	Username          string        `json:"username,omitempty"`
+	Password          string        `json:"password,omitempty"`
+	Mode              string        `json:"mode"`
+	FailureThreshold  int           `json:"failure_threshold"`
+	BlacklistDuration time.Duration `json:"blacklist_duration"`
+	AllNodes          bool          `json:"all_nodes"`
+	NodeIDs           []int64       `json:"node_ids"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
 }
 
 // Node source constants (matching config.NodeSource values).

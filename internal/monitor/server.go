@@ -124,6 +124,8 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/subscriptions/settings", s.withAuth(s.handleSubscriptionSettings))
 	mux.HandleFunc("/api/subscriptions", s.withAuth(s.handleSubscriptions))
 	mux.HandleFunc("/api/subscriptions/", s.withAuth(s.handleSubscriptionItem))
+	mux.HandleFunc("/api/proxy-pools", s.withAuth(s.handleProxyPools))
+	mux.HandleFunc("/api/proxy-pools/", s.withAuth(s.handleProxyPoolItem))
 	mux.HandleFunc("/api/geoip/refresh", s.withAuth(s.handleGeoIPRefresh))
 	mux.HandleFunc("/api/reload", s.withAuth(s.handleReload))
 	mux.HandleFunc("/api/traffic", s.withAuth(s.handleTraffic))
@@ -698,8 +700,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 //   - scheme=socks5
 //   - scheme=all    (同时导出 HTTP 和 SOCKS5)
 //
-// 在 pool/hybrid 模式下，还会导出 Pool 代理池入口和 GeoIP 分区路由入口。
-// 导出内容会遵循 listener.protocol 与 multi_port.protocol。
+// 导出内容包含启用的代理池入口、GeoIP 全局入口和已配置本地端口的节点入口。
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -722,35 +723,34 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 	seen := make(map[string]bool)
 
-	// 读取运行模式和监听配置
 	s.cfgMu.RLock()
-	mode := ""
-	var listenerCfg config.ListenerConfig
 	var multiPortCfg config.MultiPortConfig
 	var geoipCfg config.GeoIPConfig
+	var proxyPools []config.ProxyPoolConfig
 	if s.cfgSrc != nil {
-		mode = s.cfgSrc.Mode
-		listenerCfg = s.cfgSrc.Listener
 		multiPortCfg = s.cfgSrc.MultiPort
 		geoipCfg = s.cfgSrc.GeoIP
+		proxyPools = append([]config.ProxyPoolConfig(nil), s.cfgSrc.ProxyPools...)
 	}
 	s.cfgMu.RUnlock()
 
-	// Pool 代理池入口（pool 或 hybrid 模式）
-	if (mode == "pool" || mode == "hybrid") && listenerCfg.Port > 0 {
-		poolAddr := listenerCfg.Address
+	for _, proxyPool := range proxyPools {
+		if !proxyPool.Enabled || proxyPool.Listener.Port == 0 {
+			continue
+		}
+		poolAddr := proxyPool.Listener.Address
 		if poolAddr == "" || poolAddr == "0.0.0.0" || poolAddr == "::" {
 			if extIP, _, _, _ := s.getSettings(); extIP != "" {
 				poolAddr = extIP
 			}
 		}
 		var poolAuth string
-		if listenerCfg.Username != "" && listenerCfg.Password != "" {
-			poolAuth = fmt.Sprintf("%s:%s@", listenerCfg.Username, listenerCfg.Password)
+		if proxyPool.Listener.Username != "" && proxyPool.Listener.Password != "" {
+			poolAuth = fmt.Sprintf("%s:%s@", proxyPool.Listener.Username, proxyPool.Listener.Password)
 		}
-		poolURIs := exportProxyURIsForProtocol(listenerCfg.Protocol, scheme, poolAuth, poolAddr, listenerCfg.Port)
+		poolURIs := exportProxyURIsForProtocol(proxyPool.Listener.Protocol, scheme, poolAuth, poolAddr, proxyPool.Listener.Port)
 		if len(poolURIs) > 0 {
-			lines = append(lines, "# Pool 代理池入口")
+			lines = append(lines, fmt.Sprintf("# 代理池入口: %s", proxyPool.Name))
 			for _, uri := range poolURIs {
 				if !seen[uri] {
 					lines = append(lines, uri)
@@ -769,14 +769,19 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var geoAuth string
-		if listenerCfg.Username != "" && listenerCfg.Password != "" {
-			geoAuth = fmt.Sprintf("%s:%s@", listenerCfg.Username, listenerCfg.Password)
+		if len(proxyPools) > 0 && proxyPools[0].Listener.Username != "" && proxyPools[0].Listener.Password != "" {
+			geoAuth = fmt.Sprintf("%s:%s@", proxyPools[0].Listener.Username, proxyPools[0].Listener.Password)
 		}
 		regions := geoip.AllRegions()
 		var pathParts []string
-		for _, r := range regions {
-			if r != "other" {
-				pathParts = append(pathParts, fmt.Sprintf("/%s/", r))
+		for _, proxyPool := range proxyPools {
+			if !proxyPool.Enabled {
+				continue
+			}
+			for _, r := range regions {
+				if r != "other" {
+					pathParts = append(pathParts, fmt.Sprintf("/%d/%s/", proxyPool.ID, r))
+				}
 			}
 		}
 		lines = append(lines, fmt.Sprintf("# GeoIP 分区路由入口 (支持路径: %s)", strings.Join(pathParts, " ")))
@@ -790,7 +795,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 	// Multi-port 独立节点
 	multiPortHeaderAdded := false
-	if len(snapshots) > 0 && (mode == "hybrid" || mode == "multi-port" || mode == "") {
+	if len(snapshots) > 0 {
 		for _, snap := range snapshots {
 			// 只导出有监听地址和端口的节点
 			if snap.ListenAddress == "" || snap.Port == 0 {
@@ -1733,6 +1738,278 @@ func subscriptionSourceResponse(source store.SubscriptionSource) map[string]any 
 		"created_at":   source.CreatedAt,
 		"updated_at":   source.UpdatedAt,
 	}
+}
+
+type proxyPoolPayload struct {
+	Name              string  `json:"name"`
+	Enabled           *bool   `json:"enabled,omitempty"`
+	ListenAddress     string  `json:"listen_address"`
+	ListenPort        uint16  `json:"listen_port"`
+	Protocol          string  `json:"protocol"`
+	Username          string  `json:"username"`
+	Password          string  `json:"password"`
+	Mode              string  `json:"mode"`
+	FailureThreshold  int     `json:"failure_threshold"`
+	BlacklistDuration string  `json:"blacklist_duration"`
+	AllNodes          *bool   `json:"all_nodes,omitempty"`
+	NodeIDs           []int64 `json:"node_ids"`
+}
+
+func (s *Server) handleProxyPools(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		writeJSON(w, map[string]any{"error": "数据库存储未初始化"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		pools, err := s.store.ListProxyPools(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("读取代理池失败: %v", err)})
+			return
+		}
+		writeJSON(w, map[string]any{"proxy_pools": proxyPoolsResponse(pools)})
+	case http.MethodPost:
+		var payload proxyPoolPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "请求格式错误"})
+			return
+		}
+		pool, err := proxyPoolFromPayload(payload, nil)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		if err := s.store.CreateProxyPool(r.Context(), &pool); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存代理池失败: %v", err)})
+			return
+		}
+		if err := s.reloadProxyPoolsFromStore(r.Context()); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"proxy_pool": proxyPoolResponse(pool), "message": "代理池已添加", "need_reload": true})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleProxyPoolItem(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		writeJSON(w, map[string]any{"error": "数据库存储未初始化"})
+		return
+	}
+	id, ok := parseIDPath(r.URL.Path, "/api/proxy-pools/")
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(w, map[string]any{"error": "代理池不存在"})
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		current, err := s.store.GetProxyPool(r.Context(), id)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("读取代理池失败: %v", err)})
+			return
+		}
+		if current == nil {
+			w.WriteHeader(http.StatusNotFound)
+			writeJSON(w, map[string]any{"error": "代理池不存在"})
+			return
+		}
+		var payload proxyPoolPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "请求格式错误"})
+			return
+		}
+		next, err := proxyPoolFromPayload(payload, current)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		if err := s.store.UpdateProxyPool(r.Context(), &next); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存代理池失败: %v", err)})
+			return
+		}
+		if err := s.reloadProxyPoolsFromStore(r.Context()); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"proxy_pool": proxyPoolResponse(next), "message": "代理池已保存", "need_reload": true})
+	case http.MethodDelete:
+		if err := s.store.DeleteProxyPool(r.Context(), id); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("删除代理池失败: %v", err)})
+			return
+		}
+		if err := s.reloadProxyPoolsFromStore(r.Context()); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"message": "代理池已删除", "need_reload": true})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func parseIDPath(path, prefix string) (int64, bool) {
+	rest := strings.Trim(strings.TrimPrefix(path, prefix), "/")
+	if rest == "" || strings.Contains(rest, "/") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(rest, 10, 64)
+	return id, err == nil && id > 0
+}
+
+func proxyPoolFromPayload(payload proxyPoolPayload, current *store.ProxyPool) (store.ProxyPool, error) {
+	pool := store.ProxyPool{
+		Enabled:           true,
+		ListenAddress:     "0.0.0.0",
+		ListenPort:        2323,
+		Protocol:          config.InboundProtocolMixed,
+		Mode:              "sequential",
+		FailureThreshold:  3,
+		BlacklistDuration: 24 * time.Hour,
+		AllNodes:          true,
+	}
+	if current != nil {
+		pool = *current
+	}
+	pool.Name = strings.TrimSpace(payload.Name)
+	if pool.Name == "" {
+		return pool, errors.New("代理池名称不能为空")
+	}
+	if payload.Enabled != nil {
+		pool.Enabled = *payload.Enabled
+	}
+	pool.ListenAddress = strings.TrimSpace(payload.ListenAddress)
+	if pool.ListenAddress == "" {
+		pool.ListenAddress = "0.0.0.0"
+	}
+	if payload.ListenPort == 0 {
+		return pool, errors.New("监听端口必须大于 0")
+	}
+	pool.ListenPort = payload.ListenPort
+	protocol, err := config.NormalizeInboundProtocol(payload.Protocol)
+	if err != nil {
+		return pool, err
+	}
+	pool.Protocol = protocol
+	mode, err := config.NormalizePoolMode(payload.Mode)
+	if err != nil {
+		return pool, err
+	}
+	pool.Mode = mode
+	if payload.FailureThreshold <= 0 {
+		return pool, errors.New("失败阈值必须大于 0")
+	}
+	pool.FailureThreshold = payload.FailureThreshold
+	if payload.BlacklistDuration != "" {
+		duration, err := parsePositiveDuration(payload.BlacklistDuration, "黑名单持续时间")
+		if err != nil {
+			return pool, err
+		}
+		pool.BlacklistDuration = duration
+	}
+	if payload.AllNodes != nil {
+		pool.AllNodes = *payload.AllNodes
+	}
+	pool.NodeIDs = cleanNodeIDs(payload.NodeIDs)
+	if !pool.AllNodes && len(pool.NodeIDs) == 0 {
+		return pool, errors.New("请选择至少一个节点，或启用全部节点")
+	}
+	pool.Username = payload.Username
+	pool.Password = payload.Password
+	return pool, nil
+}
+
+func cleanNodeIDs(values []int64) []int64 {
+	out := make([]int64, 0, len(values))
+	seen := make(map[int64]struct{}, len(values))
+	for _, id := range values {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func proxyPoolsResponse(pools []store.ProxyPool) []map[string]any {
+	resp := make([]map[string]any, 0, len(pools))
+	for _, pool := range pools {
+		resp = append(resp, proxyPoolResponse(pool))
+	}
+	return resp
+}
+
+func proxyPoolResponse(pool store.ProxyPool) map[string]any {
+	return map[string]any{
+		"id":                 pool.ID,
+		"name":               pool.Name,
+		"enabled":            pool.Enabled,
+		"listen_address":     pool.ListenAddress,
+		"listen_port":        pool.ListenPort,
+		"protocol":           pool.Protocol,
+		"username":           pool.Username,
+		"password":           pool.Password,
+		"mode":               pool.Mode,
+		"failure_threshold":  pool.FailureThreshold,
+		"blacklist_duration": pool.BlacklistDuration.String(),
+		"all_nodes":          pool.AllNodes,
+		"node_ids":           pool.NodeIDs,
+		"created_at":         pool.CreatedAt,
+		"updated_at":         pool.UpdatedAt,
+	}
+}
+
+func (s *Server) reloadProxyPoolsFromStore(ctx context.Context) error {
+	pools, err := s.store.ListProxyPools(ctx)
+	if err != nil {
+		return fmt.Errorf("刷新代理池配置失败: %w", err)
+	}
+	proxyPools := make([]config.ProxyPoolConfig, 0, len(pools))
+	for _, pool := range pools {
+		proxyPools = append(proxyPools, config.ProxyPoolConfig{
+			ID:      pool.ID,
+			Name:    pool.Name,
+			Enabled: pool.Enabled,
+			Listener: config.ListenerConfig{
+				Address:  pool.ListenAddress,
+				Port:     pool.ListenPort,
+				Protocol: pool.Protocol,
+				Username: pool.Username,
+				Password: pool.Password,
+			},
+			Mode:              pool.Mode,
+			FailureThreshold:  pool.FailureThreshold,
+			BlacklistDuration: pool.BlacklistDuration,
+			AllNodes:          pool.AllNodes,
+			NodeIDs:           append([]int64(nil), pool.NodeIDs...),
+		})
+	}
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	if s.cfgSrc != nil {
+		s.cfgSrc.ProxyPools = proxyPools
+	}
+	return nil
 }
 
 func (s *Server) deleteSubscriptionNodes(ctx context.Context, sourceID int64) error {

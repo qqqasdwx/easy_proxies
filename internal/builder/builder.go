@@ -28,10 +28,12 @@ import (
 
 // Build converts high level config into sing-box Options tree.
 func Build(cfg *config.Config) (option.Options, error) {
+	proxyPools := effectiveProxyPools(cfg)
 	baseOutbounds := make([]option.Outbound, 0, len(cfg.Nodes))
 	memberTags := make([]string, 0, len(cfg.Nodes))
 	metadata := make(map[string]poolout.MemberMeta)
 	nodesByTag := make(map[string]config.NodeConfig)
+	nodeIDToTag := make(map[int64]string)
 	var failedNodes []string
 	usedTags := make(map[string]int) // Track tag usage for uniqueness
 
@@ -98,18 +100,18 @@ func Build(cfg *config.Config) (option.Options, error) {
 		memberTags = append(memberTags, tag)
 		baseOutbounds = append(baseOutbounds, outbound)
 		nodesByTag[tag] = node
+		if node.ID > 0 {
+			nodeIDToTag[node.ID] = tag
+		}
 		meta := poolout.MemberMeta{
 			Name: node.Name,
 			URI:  node.URI,
-			Mode: cfg.Mode,
+			Mode: "node",
 		}
-		// For multi-port and hybrid modes, use per-node port
-		if cfg.Mode == "multi-port" || cfg.Mode == "hybrid" {
+		if node.Port > 0 {
+			meta.Mode = "multi-port"
 			meta.ListenAddress = cfg.MultiPort.Address
 			meta.Port = node.Port
-		} else {
-			meta.ListenAddress = cfg.Listener.Address
-			meta.Port = cfg.Listener.Port
 		}
 
 		// Default region (will be updated by concurrent GeoIP resolution)
@@ -226,44 +228,66 @@ func Build(cfg *config.Config) (option.Options, error) {
 	)
 	copy(outbounds, baseOutbounds)
 
-	// Determine which components to enable based on mode
-	enablePoolInbound := cfg.Mode == "pool" || cfg.Mode == "hybrid"
-	enableMultiPort := cfg.Mode == "multi-port" || cfg.Mode == "hybrid"
-
-	if !enablePoolInbound && !enableMultiPort {
-		return option.Options{}, fmt.Errorf("unsupported mode %s", cfg.Mode)
-	}
-
-	// Build pool inbound (single entry point for all nodes)
-	if enablePoolInbound {
-		inbound, err := buildPoolInbound(cfg)
+	firstPoolTag := ""
+	for _, proxyPool := range proxyPools {
+		if !proxyPool.Enabled {
+			continue
+		}
+		poolMembers := proxyPoolMembers(proxyPool, memberTags, nodeIDToTag)
+		if len(poolMembers) == 0 {
+			log.Printf("⚠️  Proxy pool %q has no active members (skipping)", proxyPool.Name)
+			continue
+		}
+		inboundTag := proxyPoolInboundTag(proxyPool)
+		poolTag := proxyPoolTag(proxyPool)
+		inbound, err := buildInboundFromListener(proxyPool.Listener, inboundTag)
 		if err != nil {
-			return option.Options{}, err
+			return option.Options{}, fmt.Errorf("build proxy pool inbound %q: %w", proxyPool.Name, err)
 		}
 		inbounds = append(inbounds, inbound)
 		poolOptions := poolout.Options{
-			Mode:              cfg.Pool.Mode,
-			Members:           memberTags,
-			FailureThreshold:  cfg.Pool.FailureThreshold,
-			BlacklistDuration: cfg.Pool.BlacklistDuration,
-			Metadata:          metadata,
+			Mode:              proxyPool.Mode,
+			Members:           poolMembers,
+			FailureThreshold:  proxyPool.FailureThreshold,
+			BlacklistDuration: proxyPool.BlacklistDuration,
+			Metadata:          metadataForMembers(metadata, poolMembers),
 		}
 		outbounds = append(outbounds, option.Outbound{
 			Type:    poolout.Type,
-			Tag:     poolout.Tag,
+			Tag:     poolTag,
 			Options: &poolOptions,
 		})
-		route.Final = poolout.Tag
+		if firstPoolTag == "" {
+			firstPoolTag = poolTag
+			route.Final = poolTag
+		}
+		route.Rules = append(route.Rules, option.Rule{
+			Type: C.RuleTypeDefault,
+			DefaultOptions: option.DefaultRule{
+				RawDefaultRule: option.RawDefaultRule{
+					Inbound: badoption.Listable[string]{inboundTag},
+				},
+				RuleAction: option.RuleAction{
+					Action: C.RuleActionTypeRoute,
+					RouteOptions: option.RouteActionOptions{
+						Outbound: poolTag,
+					},
+				},
+			},
+		})
 	}
 
-	// Build multi-port inbounds (one port per node)
-	if enableMultiPort {
+	// Build multi-port inbounds (one port per node) for nodes that opt in.
+	if hasNodeLocalListeners(activeNodes) {
 		addr, err := parseAddr(cfg.MultiPort.Address)
 		if err != nil {
 			return option.Options{}, fmt.Errorf("parse multi-port address: %w", err)
 		}
 		for _, tag := range memberTags {
 			meta := metadata[tag]
+			if meta.Port == 0 {
+				continue
+			}
 			perMeta := map[string]poolout.MemberMeta{tag: meta}
 			poolTag := fmt.Sprintf("%s-%s", poolout.Tag, tag)
 			perOptions := poolout.Options{
@@ -315,33 +339,37 @@ func Build(cfg *config.Config) (option.Options, error) {
 	}
 
 	// Build GeoIP region-based pool outbounds and routing
-	if cfg.GeoIP.Enabled && enablePoolInbound {
-		// Create pool outbound for each region that has nodes
-		for _, region := range geoip.AllRegions() {
-			members := regionMembers[region]
-			if len(members) == 0 {
+	if cfg.GeoIP.Enabled && firstPoolTag != "" {
+		for _, proxyPool := range proxyPools {
+			if !proxyPool.Enabled {
 				continue
 			}
-
-			// Build metadata for this region's members
-			regionMeta := make(map[string]poolout.MemberMeta)
-			for _, tag := range members {
-				regionMeta[tag] = metadata[tag]
+			poolMembers := proxyPoolMembers(proxyPool, memberTags, nodeIDToTag)
+			if len(poolMembers) == 0 {
+				continue
 			}
-
-			regionPoolTag := fmt.Sprintf("pool-%s", region)
-			regionPoolOptions := poolout.Options{
-				Mode:              cfg.Pool.Mode,
-				Members:           members,
-				FailureThreshold:  cfg.Pool.FailureThreshold,
-				BlacklistDuration: cfg.Pool.BlacklistDuration,
-				Metadata:          regionMeta,
+			poolMemberSet := make(map[string]struct{}, len(poolMembers))
+			for _, tag := range poolMembers {
+				poolMemberSet[tag] = struct{}{}
 			}
-			outbounds = append(outbounds, option.Outbound{
-				Type:    poolout.Type,
-				Tag:     regionPoolTag,
-				Options: &regionPoolOptions,
-			})
+			for _, region := range geoip.AllRegions() {
+				members := intersectMembers(regionMembers[region], poolMemberSet)
+				if len(members) == 0 {
+					continue
+				}
+				regionPoolOptions := poolout.Options{
+					Mode:              proxyPool.Mode,
+					Members:           members,
+					FailureThreshold:  proxyPool.FailureThreshold,
+					BlacklistDuration: proxyPool.BlacklistDuration,
+					Metadata:          metadataForMembers(metadata, members),
+				}
+				outbounds = append(outbounds, option.Outbound{
+					Type:    poolout.Type,
+					Tag:     proxyPoolRegionTag(proxyPool, region),
+					Options: &regionPoolOptions,
+				})
+			}
 		}
 
 		// Log GeoIP routing info
@@ -351,12 +379,20 @@ func Build(cfg *config.Config) (option.Options, error) {
 		}
 		geoipListen := cfg.GeoIP.Listen
 		if geoipListen == "" {
-			geoipListen = cfg.Listener.Address
+			if len(proxyPools) > 0 {
+				geoipListen = proxyPools[0].Listener.Address
+			} else {
+				geoipListen = cfg.Listener.Address
+			}
 		}
 		log.Println("🌐 GeoIP Region Routing Enabled:")
-		log.Printf("   Access via: http://%s:%d/{region}", geoipListen, geoipPort)
+		log.Printf("   Access via: http://%s:%d/{pool}/{region}", geoipListen, geoipPort)
 		log.Println("   Available regions: /jp, /kr, /us, /hk, /tw, /sg, /other")
 		log.Println("   Default (no path): all nodes pool")
+	}
+
+	if len(inbounds) == 0 {
+		return option.Options{}, errors.New("no enabled proxy listeners available")
 	}
 
 	opts := option.Options{
@@ -451,6 +487,92 @@ func geoIPResolverConfig(cfg config.DNSConfig) geoip.ResolverConfig {
 	}
 }
 
+func effectiveProxyPools(cfg *config.Config) []config.ProxyPoolConfig {
+	if len(cfg.ProxyPools) > 0 {
+		return cfg.ProxyPools
+	}
+	return []config.ProxyPoolConfig{{
+		Name:              "legacy",
+		Enabled:           true,
+		Listener:          cfg.Listener,
+		Mode:              cfg.Pool.Mode,
+		FailureThreshold:  cfg.Pool.FailureThreshold,
+		BlacklistDuration: cfg.Pool.BlacklistDuration,
+		AllNodes:          true,
+	}}
+}
+
+func proxyPoolTag(pool config.ProxyPoolConfig) string {
+	if pool.ID == 0 {
+		return poolout.Tag
+	}
+	if pool.ID > 0 {
+		return fmt.Sprintf("proxy-pool-%d", pool.ID)
+	}
+	return fmt.Sprintf("proxy-pool-%s", sanitizeTag(pool.Name))
+}
+
+func proxyPoolInboundTag(pool config.ProxyPoolConfig) string {
+	if pool.ID == 0 {
+		return "http-in"
+	}
+	return proxyPoolTag(pool) + "-in"
+}
+
+func proxyPoolRegionTag(pool config.ProxyPoolConfig, region string) string {
+	if pool.ID == 0 {
+		return fmt.Sprintf("pool-%s", region)
+	}
+	return fmt.Sprintf("%s-%s", proxyPoolTag(pool), region)
+}
+
+func proxyPoolMembers(pool config.ProxyPoolConfig, allTags []string, nodeIDToTag map[int64]string) []string {
+	if pool.AllNodes || len(pool.NodeIDs) == 0 {
+		return append([]string(nil), allTags...)
+	}
+	members := make([]string, 0, len(pool.NodeIDs))
+	seen := make(map[string]struct{}, len(pool.NodeIDs))
+	for _, nodeID := range pool.NodeIDs {
+		tag := nodeIDToTag[nodeID]
+		if tag == "" {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		members = append(members, tag)
+	}
+	return members
+}
+
+func metadataForMembers(metadata map[string]poolout.MemberMeta, members []string) map[string]poolout.MemberMeta {
+	out := make(map[string]poolout.MemberMeta, len(members))
+	for _, tag := range members {
+		out[tag] = metadata[tag]
+	}
+	return out
+}
+
+func intersectMembers(candidates []string, allowed map[string]struct{}) []string {
+	members := make([]string, 0, len(candidates))
+	for _, tag := range candidates {
+		if _, ok := allowed[tag]; ok {
+			members = append(members, tag)
+		}
+	}
+	return members
+}
+
+func hasNodeLocalListeners(nodes []config.NodeConfig) bool {
+	for _, node := range nodes {
+		if node.Port > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func buildPoolInbound(cfg *config.Config) (option.Inbound, error) {
 	listenAddr, err := parseAddr(cfg.Listener.Address)
 	if err != nil {
@@ -464,6 +586,14 @@ func buildPoolInbound(cfg *config.Config) (option.Inbound, error) {
 		cfg.Listener.Password,
 		"http-in",
 	)
+}
+
+func buildInboundFromListener(listener config.ListenerConfig, tag string) (option.Inbound, error) {
+	listenAddr, err := parseAddr(listener.Address)
+	if err != nil {
+		return option.Inbound{}, fmt.Errorf("parse listener address: %w", err)
+	}
+	return buildInboundByProtocol(listener.Protocol, listenAddr, listener.Port, listener.Username, listener.Password, tag)
 }
 
 func buildInboundByProtocol(protocol string, listenAddr *badoption.Addr, port uint16, username, password, tag string) (option.Inbound, error) {
