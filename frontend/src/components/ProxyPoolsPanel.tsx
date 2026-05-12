@@ -139,6 +139,14 @@ export default function ProxyPoolsPanel() {
     return ''
   }
 
+  const geoIPPortConflict = (port: number) => {
+    const pool = pools.find(item => item.listen_port === port)
+    if (pool) return `GeoIP 路由端口 ${port} 已被代理池「${pool.name}」使用`
+    const node = nodes.find(item => item.port === port)
+    if (node) return `GeoIP 路由端口 ${port} 已被节点「${node.name}」使用`
+    return ''
+  }
+
   const createDraft = () => {
     const usedPorts = collectUsedPorts()
     let nextPort = 2323
@@ -207,6 +215,17 @@ export default function ProxyPoolsPanel() {
 
   const saveGeoIPSettings = async () => {
     if (!settings) return
+    if (settings.geoip_enabled) {
+      if (settings.geoip_port < 1 || settings.geoip_port > 65535) {
+        setError('GeoIP 路由端口必须在 1-65535 之间')
+        return
+      }
+      const conflict = geoIPPortConflict(settings.geoip_port)
+      if (conflict) {
+        setError(conflict)
+        return
+      }
+    }
     setSavingGeoIP(true)
     setError('')
     setSuccess('')
