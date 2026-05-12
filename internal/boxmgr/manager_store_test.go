@@ -556,6 +556,33 @@ func TestApplyStoreNodeStateHydratesExistingNodeID(t *testing.T) {
 	}
 }
 
+func TestCurrentConfigClonesProxyPools(t *testing.T) {
+	cfg := &config.Config{
+		ProxyPools: []config.ProxyPoolConfig{{
+			ID:       7,
+			Name:     "selected",
+			AllNodes: false,
+			NodeIDs:  []int64{101, 202},
+		}},
+	}
+	mgr := New(cfg, monitor.Config{})
+
+	cloned := mgr.CurrentConfig()
+	if cloned == nil {
+		t.Fatal("CurrentConfig returned nil")
+	}
+	cloned.ProxyPools[0].Name = "mutated"
+	cloned.ProxyPools[0].NodeIDs[0] = 999
+
+	again := mgr.CurrentConfig()
+	if again.ProxyPools[0].Name != "selected" {
+		t.Fatalf("proxy pool name = %q, want selected", again.ProxyPools[0].Name)
+	}
+	if again.ProxyPools[0].NodeIDs[0] != 101 {
+		t.Fatalf("proxy pool node id = %d, want 101", again.ProxyPools[0].NodeIDs[0])
+	}
+}
+
 func TestRestoreAndFlushTrafficStats(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))

@@ -1432,12 +1432,25 @@ func cloneNodes(nodes []config.NodeConfig) []config.NodeConfig {
 	return out
 }
 
+func cloneProxyPools(pools []config.ProxyPoolConfig) []config.ProxyPoolConfig {
+	if len(pools) == 0 {
+		return nil
+	}
+	out := make([]config.ProxyPoolConfig, len(pools))
+	copy(out, pools)
+	for idx := range out {
+		out[idx].NodeIDs = append([]int64(nil), pools[idx].NodeIDs...)
+	}
+	return out
+}
+
 func (m *Manager) copyConfigLocked() *config.Config {
 	if m.cfg == nil {
 		return nil
 	}
 	cloned := *m.cfg
 	cloned.Nodes = cloneNodes(m.cfg.Nodes)
+	cloned.ProxyPools = cloneProxyPools(m.cfg.ProxyPools)
 	return &cloned
 }
 
