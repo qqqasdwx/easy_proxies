@@ -203,7 +203,7 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 // Reload gracefully switches to a new configuration.
-// For multi-port mode, we must stop the old instance first to release ports.
+// Node-local listeners require stopping the old instance first to release ports.
 func (m *Manager) Reload(newCfg *config.Config) error {
 	if newCfg == nil {
 		return errors.New("new config is nil")
@@ -223,8 +223,8 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 	m.logger.Infof("reloading with %d nodes", len(newCfg.Nodes))
 	m.FlushStatsToStore(ctx)
 
-	// For multi-port mode, we must close old instance first to release ports
-	// This causes a brief interruption but avoids port conflicts
+	// Close the old instance first so node-local listener ports are released.
+	// This causes a brief interruption but avoids port conflicts.
 	if oldBox != nil {
 		m.logger.Infof("stopping old instance to release ports...")
 		if err := oldBox.Close(); err != nil {
@@ -559,40 +559,55 @@ func (m *Manager) startGeoIPRouter(ctx context.Context, cfg *config.Config) {
 	if geoipPort == 0 {
 		geoipPort = 1221 // Default GeoIP router port
 	}
-	// Avoid conflict with the pool listener port
-	if geoipPort == cfg.Listener.Port {
-		geoipPort = 1221
-		if geoipPort == cfg.Listener.Port {
-			geoipPort = cfg.Listener.Port + 1
+	for _, proxyPool := range cfg.ProxyPools {
+		if proxyPool.Enabled && geoipPort == proxyPool.Listener.Port {
+			geoipPort = 1221
+			if geoipPort == proxyPool.Listener.Port {
+				geoipPort = proxyPool.Listener.Port + 1
+			}
+			log.Printf("⚠️  GeoIP port conflicts with proxy pool port %d, using %d instead", proxyPool.Listener.Port, geoipPort)
+			break
 		}
-		log.Printf("⚠️  GeoIP port conflicts with listener port %d, using %d instead", cfg.Listener.Port, geoipPort)
 	}
 	geoipListen := cfg.GeoIP.Listen
 	if geoipListen == "" {
-		geoipListen = cfg.Listener.Address
+		if proxyPool := firstEnabledProxyPool(cfg.ProxyPools); proxyPool != nil {
+			geoipListen = proxyPool.Listener.Address
+		} else {
+			geoipListen = cfg.Listener.Address
+		}
 	}
 
+	username, password := geoIPRouterCredentials(cfg)
 	routerCfg := geoip.RouterConfig{
 		Listen:   geoipListen,
 		Port:     geoipPort,
-		Username: cfg.Listener.Username,
-		Password: cfg.Listener.Password,
+		Username: username,
+		Password: password,
 	}
 
 	router := geoip.NewRouter(routerCfg, nil)
 
-	// Register region pool dialers
-	for _, region := range geoip.AllRegions() {
-		poolTag := fmt.Sprintf("pool-%s", region)
-		if dialer, ok := pool.GetDialer(poolTag); ok {
-			router.SetPool(region, dialer)
-			log.Printf("   GeoIP: registered pool %s for region /%s", poolTag, region)
+	for _, proxyPool := range cfg.ProxyPools {
+		if !proxyPool.Enabled {
+			continue
 		}
-	}
-
-	// Register global pool dialer (for requests without region path)
-	if dialer, ok := pool.GetDialer(pool.Tag); ok {
-		router.SetGlobalPool(dialer)
+		poolPath := fmt.Sprintf("%d", proxyPool.ID)
+		globalTag := fmt.Sprintf("proxy-pool-%d", proxyPool.ID)
+		if dialer, ok := pool.GetDialer(globalTag); ok {
+			router.SetPoolRoute(poolPath, "", dialer)
+			if router.DefaultRoute() == "" {
+				router.SetDefaultRoute(poolPath)
+				router.SetGlobalPool(dialer)
+			}
+		}
+		for _, region := range geoip.AllRegions() {
+			poolTag := fmt.Sprintf("proxy-pool-%d-%s", proxyPool.ID, region)
+			if dialer, ok := pool.GetDialer(poolTag); ok {
+				router.SetPoolRoute(poolPath, region, dialer)
+				log.Printf("   GeoIP: registered pool %s for path /%s/%s", poolTag, poolPath, region)
+			}
+		}
 	}
 
 	if err := router.Start(ctx); err != nil {
@@ -603,6 +618,30 @@ func (m *Manager) startGeoIPRouter(ctx context.Context, cfg *config.Config) {
 	m.mu.Lock()
 	m.geoRouter = router
 	m.mu.Unlock()
+}
+
+func firstEnabledProxyPool(pools []config.ProxyPoolConfig) *config.ProxyPoolConfig {
+	for idx := range pools {
+		if pools[idx].Enabled {
+			return &pools[idx]
+		}
+	}
+	return nil
+}
+
+func geoIPRouterCredentials(cfg *config.Config) (string, string) {
+	if cfg == nil {
+		return "", ""
+	}
+	for _, proxyPool := range cfg.ProxyPools {
+		if proxyPool.Enabled && proxyPool.Listener.Username != "" {
+			return proxyPool.Listener.Username, proxyPool.Listener.Password
+		}
+	}
+	if cfg.MultiPort.Username != "" {
+		return cfg.MultiPort.Username, cfg.MultiPort.Password
+	}
+	return cfg.Listener.Username, cfg.Listener.Password
 }
 
 // createBox builds a sing-box instance from config.
@@ -937,10 +976,7 @@ func (m *Manager) ListConfigNodes(ctx context.Context) ([]config.NodeConfig, err
 	for _, node := range m.cfg.Nodes {
 		out := node
 		if storeNode, ok := storeByURI[node.URI]; ok {
-			out.Disabled = !storeNode.Enabled
-			out.InboundProtocol = storeNode.InboundProtocol
-			out.OutboundJSON = storeNode.OutboundJSON
-			out.Source = config.NodeSource(storeNode.Source)
+			out = m.storeNodeToConfig(storeNode)
 		}
 		result = append(result, out)
 		seen[node.URI] = struct{}{}
@@ -1017,9 +1053,14 @@ func (m *Manager) CreateNode(ctx context.Context, node config.NodeConfig) (confi
 	normalized.Source = config.NodeSourceManual
 
 	m.cfg.Nodes = append(m.cfg.Nodes, normalized)
-	if err := m.upsertStoreNode(ctx, normalized); err != nil {
+	storeNode, err := m.upsertStoreNode(ctx, normalized)
+	if err != nil {
 		m.cfg.Nodes = m.cfg.Nodes[:len(m.cfg.Nodes)-1]
 		return config.NodeConfig{}, fmt.Errorf("save store node: %w", err)
+	}
+	if storeNode != nil {
+		normalized.ID = storeNode.ID
+		m.cfg.Nodes[len(m.cfg.Nodes)-1].ID = storeNode.ID
 	}
 	return normalized, nil
 }
@@ -1058,9 +1099,14 @@ func (m *Manager) UpdateNode(ctx context.Context, name string, node config.NodeC
 
 	prev := m.cfg.Nodes[idx]
 	m.cfg.Nodes[idx] = normalized
-	if err := m.upsertStoreNode(ctx, normalized); err != nil {
+	storeNode, err := m.upsertStoreNode(ctx, normalized)
+	if err != nil {
 		m.cfg.Nodes[idx] = prev
 		return config.NodeConfig{}, fmt.Errorf("save store node: %w", err)
+	}
+	if storeNode != nil {
+		normalized.ID = storeNode.ID
+		m.cfg.Nodes[idx].ID = storeNode.ID
 	}
 	return normalized, nil
 }
@@ -1158,7 +1204,10 @@ func (m *Manager) TriggerReload(ctx context.Context) error {
 
 	m.mu.RLock()
 	cfgCopy := m.copyConfigLocked()
-	portMap := m.cfg.BuildPortMap() // Preserve existing port assignments
+	var portMap map[string]uint16
+	if m.cfg != nil {
+		portMap = m.cfg.BuildPortMap() // Preserve existing port assignments
+	}
 	m.mu.RUnlock()
 
 	if cfgCopy == nil {
@@ -1221,7 +1270,11 @@ func (m *Manager) applyStoreNodeState(ctx context.Context, cfg *config.Config) e
 	filtered := cfg.Nodes[:0]
 	for _, node := range cfg.Nodes {
 		seen[node.URI] = struct{}{}
-		if storeNode, ok := storeByURI[node.URI]; ok && !storeNode.Enabled {
+		if storeNode, ok := storeByURI[node.URI]; ok {
+			if !storeNode.Enabled {
+				continue
+			}
+			filtered = append(filtered, m.storeNodeToConfig(storeNode))
 			continue
 		}
 		filtered = append(filtered, node)
@@ -1239,24 +1292,24 @@ func (m *Manager) applyStoreNodeState(ctx context.Context, cfg *config.Config) e
 	return nil
 }
 
-func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) error {
+func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) (*store.Node, error) {
 	if m.store == nil {
-		return nil
+		return nil, nil
 	}
 	ctx = storeContext(ctx)
 
 	storeNode, err := m.store.GetNodeByURI(ctx, node.URI)
 	if err != nil {
-		return fmt.Errorf("lookup store node: %w", err)
+		return nil, fmt.Errorf("lookup store node: %w", err)
 	}
 	if storeNode == nil && node.Name != "" {
 		storeNode, err = m.store.GetNodeByName(ctx, node.Name)
 		if err != nil {
-			return fmt.Errorf("lookup store node by name: %w", err)
+			return nil, fmt.Errorf("lookup store node by name: %w", err)
 		}
 	}
 	if storeNode == nil {
-		return m.store.CreateNode(ctx, &store.Node{
+		storeNode = &store.Node{
 			URI:             node.URI,
 			Name:            node.Name,
 			Source:          string(node.Source),
@@ -1266,7 +1319,11 @@ func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) e
 			InboundProtocol: node.InboundProtocol,
 			OutboundJSON:    node.OutboundJSON,
 			Enabled:         !node.Disabled,
-		})
+		}
+		if err := m.store.CreateNode(ctx, storeNode); err != nil {
+			return nil, err
+		}
+		return storeNode, nil
 	}
 
 	storeNode.Name = node.Name
@@ -1277,7 +1334,10 @@ func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) e
 	storeNode.InboundProtocol = node.InboundProtocol
 	storeNode.OutboundJSON = node.OutboundJSON
 	storeNode.Enabled = !node.Disabled
-	return m.store.UpdateNode(ctx, storeNode)
+	if err := m.store.UpdateNode(ctx, storeNode); err != nil {
+		return nil, err
+	}
+	return storeNode, nil
 }
 
 func (m *Manager) deleteStoreNode(ctx context.Context, name string) error {
@@ -1335,8 +1395,16 @@ func extractPortFromBindError(err error) uint16 {
 func reassignConflictingPort(cfg *config.Config, conflictPort uint16) bool {
 	// Build set of used ports
 	usedPorts := make(map[uint16]bool)
-	if cfg.Mode == "hybrid" {
-		usedPorts[cfg.Listener.Port] = true
+	if port, ok := config.ListenPort(cfg.Management.Listen); ok {
+		usedPorts[port] = true
+	}
+	for _, proxyPool := range cfg.ProxyPools {
+		if proxyPool.Enabled && proxyPool.Listener.Port > 0 {
+			usedPorts[proxyPool.Listener.Port] = true
+		}
+	}
+	if cfg.GeoIP.Enabled && cfg.GeoIP.Port > 0 {
+		usedPorts[cfg.GeoIP.Port] = true
 	}
 	for _, node := range cfg.Nodes {
 		usedPorts[node.Port] = true
@@ -1375,12 +1443,25 @@ func cloneNodes(nodes []config.NodeConfig) []config.NodeConfig {
 	return out
 }
 
+func cloneProxyPools(pools []config.ProxyPoolConfig) []config.ProxyPoolConfig {
+	if len(pools) == 0 {
+		return nil
+	}
+	out := make([]config.ProxyPoolConfig, len(pools))
+	copy(out, pools)
+	for idx := range out {
+		out[idx].NodeIDs = append([]int64(nil), pools[idx].NodeIDs...)
+	}
+	return out
+}
+
 func (m *Manager) copyConfigLocked() *config.Config {
 	if m.cfg == nil {
 		return nil
 	}
 	cloned := *m.cfg
 	cloned.Nodes = cloneNodes(m.cfg.Nodes)
+	cloned.ProxyPools = cloneProxyPools(m.cfg.ProxyPools)
 	return &cloned
 }
 
@@ -1396,6 +1477,17 @@ func (m *Manager) nodeIndexLocked(name string) int {
 func (m *Manager) portInUseLocked(port uint16, currentName string) bool {
 	if port == 0 {
 		return false
+	}
+	if managementPort, ok := config.ListenPort(m.cfg.Management.Listen); ok && managementPort == port {
+		return true
+	}
+	if m.cfg.GeoIP.Enabled && m.cfg.GeoIP.Port == port {
+		return true
+	}
+	for _, proxyPool := range m.cfg.ProxyPools {
+		if proxyPool.Listener.Port == port {
+			return true
+		}
 	}
 	for _, node := range m.cfg.Nodes {
 		if node.Name == currentName {
@@ -1414,6 +1506,17 @@ func (m *Manager) nextAvailablePortLocked() uint16 {
 		base = 24000
 	}
 	used := make(map[uint16]struct{}, len(m.cfg.Nodes))
+	if port, ok := config.ListenPort(m.cfg.Management.Listen); ok {
+		used[port] = struct{}{}
+	}
+	if m.cfg.GeoIP.Enabled && m.cfg.GeoIP.Port > 0 {
+		used[m.cfg.GeoIP.Port] = struct{}{}
+	}
+	for _, proxyPool := range m.cfg.ProxyPools {
+		if proxyPool.Listener.Port > 0 {
+			used[proxyPool.Listener.Port] = struct{}{}
+		}
+	}
 	for _, node := range m.cfg.Nodes {
 		if node.Port > 0 {
 			used[node.Port] = struct{}{}
@@ -1455,17 +1558,6 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 		}
 	}
 
-	if node.URI == "" {
-		node.URI = m.generatedOutboundURI(currentName, node.OutboundJSON)
-	}
-
-	// Check for name conflict (excluding current node when updating)
-	if idx := m.nodeIndexLocked(node.Name); idx != -1 {
-		if currentName == "" || m.cfg.Nodes[idx].Name != currentName {
-			return config.NodeConfig{}, fmt.Errorf("%w: 节点 %s 已存在", monitor.ErrNodeConflict, node.Name)
-		}
-	}
-
 	if node.OutboundJSON != "" {
 		normalizedJSON, err := builder.NormalizeOutboundJSON(node.Name, node.OutboundJSON)
 		if err != nil {
@@ -1480,6 +1572,20 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 		node.OutboundJSON = outboundJSON
 	}
 
+	if node.URI == "" {
+		node.URI = m.generatedOutboundURI(currentName, node.OutboundJSON)
+	}
+
+	// Check for name conflict (excluding current node when updating)
+	if idx := m.nodeIndexLocked(node.Name); idx != -1 {
+		if currentName == "" || m.cfg.Nodes[idx].Name != currentName {
+			return config.NodeConfig{}, fmt.Errorf("%w: 节点 %s 已存在", monitor.ErrNodeConflict, node.Name)
+		}
+	}
+	if existing := m.nodeByKeyLocked(node.NodeKey(), currentName); existing != "" {
+		return config.NodeConfig{}, fmt.Errorf("%w: 节点地址已被 %s 使用", monitor.ErrNodeConflict, existing)
+	}
+
 	if node.InboundProtocol != "" {
 		protocol, err := config.NormalizeInboundProtocol(node.InboundProtocol)
 		if err != nil {
@@ -1488,11 +1594,8 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 		node.InboundProtocol = protocol
 	}
 
-	// Handle multi-port mode specifics
-	if m.cfg.Mode == "multi-port" {
-		if node.Port == 0 {
-			node.Port = m.nextAvailablePortLocked()
-		} else if m.portInUseLocked(node.Port, currentName) {
+	if node.Port > 0 {
+		if m.portInUseLocked(node.Port, currentName) {
 			return config.NodeConfig{}, fmt.Errorf("%w: 端口 %d 已被占用", monitor.ErrNodeConflict, node.Port)
 		}
 		if node.Username == "" {
@@ -1504,8 +1607,24 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 	return node, nil
 }
 
+func (m *Manager) nodeByKeyLocked(nodeKey, currentName string) string {
+	if nodeKey == "" {
+		return ""
+	}
+	for _, existing := range m.cfg.Nodes {
+		if existing.Name == currentName {
+			continue
+		}
+		if existing.NodeKey() == nodeKey {
+			return existing.Name
+		}
+	}
+	return ""
+}
+
 func (m *Manager) storeNodeToConfig(node store.Node) config.NodeConfig {
 	return config.NodeConfig{
+		ID:              node.ID,
 		Name:            node.Name,
 		URI:             node.URI,
 		OutboundJSON:    node.OutboundJSON,

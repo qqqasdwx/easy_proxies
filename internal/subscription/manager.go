@@ -655,20 +655,6 @@ func (m *Manager) createNewConfig(nodes []config.NodeConfig) *config.Config {
 	// settings changed from the WebUI after process startup.
 	newCfg := *m.currentConfig()
 
-	// Assign port numbers to nodes in multi-port mode
-	if newCfg.Mode == "multi-port" {
-		portCursor := newCfg.MultiPort.BasePort
-		for i := range nodes {
-			nodes[i].Port = portCursor
-			portCursor++
-			// Apply default credentials
-			if nodes[i].Username == "" {
-				nodes[i].Username = newCfg.MultiPort.Username
-				nodes[i].Password = newCfg.MultiPort.Password
-			}
-		}
-	}
-
 	// Process node names
 	for i := range nodes {
 		nodes[i].Name = strings.TrimSpace(nodes[i].Name)

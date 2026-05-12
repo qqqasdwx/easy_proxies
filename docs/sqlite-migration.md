@@ -4,7 +4,7 @@ Easy Proxies uses SQLite as the only persistence source. The default local datab
 
 ## What Is Persisted
 
-- Runtime settings: mode, pool scheduling, listener, multi-port, log, GeoIP, subscription refresh, and probe target.
+- Runtime settings: proxy pools, multi-port defaults, log, DNS, GeoIP, subscription refresh, and probe target.
 - Nodes: manual nodes and subscription nodes, including source, outbound JSON, inbound protocol, local port, disabled state, and subscription ownership.
 - Subscriptions: name, URL, enabled flag, auto-update flag, interval, refresh timestamps, node count, and last error.
 - Sessions and runtime data: login sessions, traffic counters, node stats, blacklist state, and timeline data.

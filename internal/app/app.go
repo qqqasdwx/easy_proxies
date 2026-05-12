@@ -46,12 +46,7 @@ func RunWithStore(ctx context.Context, cfg *config.Config, dataStore store.Store
 	}
 
 	// Build monitor config
-	proxyUsername := cfg.Listener.Username
-	proxyPassword := cfg.Listener.Password
-	if cfg.Mode == "multi-port" || cfg.Mode == "hybrid" {
-		proxyUsername = cfg.MultiPort.Username
-		proxyPassword = cfg.MultiPort.Password
-	}
+	proxyUsername, proxyPassword := monitorProxyCredentials(cfg)
 
 	monitorCfg := monitor.Config{
 		Enabled:       cfg.ManagementEnabled(),
@@ -141,6 +136,21 @@ func RunWithStore(ctx context.Context, cfg *config.Config, dataStore store.Store
 	return nil
 }
 
+func monitorProxyCredentials(cfg *config.Config) (string, string) {
+	if cfg == nil {
+		return "", ""
+	}
+	for _, proxyPool := range cfg.ProxyPools {
+		if proxyPool.Enabled && proxyPool.Listener.Username != "" {
+			return proxyPool.Listener.Username, proxyPool.Listener.Password
+		}
+	}
+	if cfg.MultiPort.Username != "" {
+		return cfg.MultiPort.Username, cfg.MultiPort.Password
+	}
+	return cfg.Listener.Username, cfg.Listener.Password
+}
+
 func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store) error {
 	if cfg == nil || s == nil {
 		return nil
@@ -162,7 +172,11 @@ func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store)
 	filtered := cfg.Nodes[:0]
 	for _, node := range cfg.Nodes {
 		seen[node.URI] = struct{}{}
-		if storeNode, ok := storeByURI[node.URI]; ok && !storeNode.Enabled {
+		if storeNode, ok := storeByURI[node.URI]; ok {
+			if !storeNode.Enabled {
+				continue
+			}
+			filtered = append(filtered, storeNodeToConfig(storeNode))
 			continue
 		}
 		filtered = append(filtered, node)
@@ -174,19 +188,25 @@ func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store)
 		if _, ok := seen[node.URI]; ok {
 			continue
 		}
-		filtered = append(filtered, config.NodeConfig{
-			Name:            node.Name,
-			URI:             node.URI,
-			OutboundJSON:    node.OutboundJSON,
-			Port:            node.Port,
-			InboundProtocol: node.InboundProtocol,
-			Username:        node.Username,
-			Password:        node.Password,
-			Source:          config.NodeSource(node.Source),
-		})
+		filtered = append(filtered, storeNodeToConfig(node))
 	}
 	cfg.Nodes = filtered
 	return nil
+}
+
+func storeNodeToConfig(node store.Node) config.NodeConfig {
+	return config.NodeConfig{
+		ID:              node.ID,
+		Name:            node.Name,
+		URI:             node.URI,
+		OutboundJSON:    node.OutboundJSON,
+		Port:            node.Port,
+		InboundProtocol: node.InboundProtocol,
+		Username:        node.Username,
+		Password:        node.Password,
+		Source:          config.NodeSource(node.Source),
+		Disabled:        !node.Enabled,
+	}
 }
 
 func periodicStatsFlush(ctx context.Context, boxMgr *boxmgr.Manager) {

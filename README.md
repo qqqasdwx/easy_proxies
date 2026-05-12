@@ -12,15 +12,15 @@ Easy Proxies 是一个基于 [sing-box](https://sing-box.sagernet.org/) 的代�
 
 ## 核心特性
 
-- **三种运行模式**：`pool` 单入口代理池、`multi-port` 每节点独立端口、`hybrid` 混合模式。
+- **多代理池入口**：可创建多个代理池，每个代理池独立配置监听、调度策略和成员节点。
 - **多协议节点支持**：VLESS、VMess、Trojan、Shadowsocks、Hysteria2、TUIC、AnyTLS、SOCKS5、HTTP/HTTPS。
 - **SQLite 持久化**：运行设置、手工节点、订阅源、订阅节点、端口分配、禁用状态、会话和流量统计均存储在数据库中。
 - **订阅管理**：支持多个订阅源，支持启用/禁用、自动更新、刷新间隔、手动刷新和刷新状态展示。
 - **节点管理**：手工节点和订阅节点共存；手工节点可编辑，订阅节点只读但可启停。
 - **结构化节点编辑器**：支持 URI 导入、sing-box outbound JSON 编辑、表单同步和每节点本地入站设置。
 - **健康检查与熔断**：自动探测节点可用性，支持失败黑名单、手动拉黑和手动解封。
-- **GeoIP 分区路由**：按节点地域分组，并提供独立 HTTP 代理入口按区域出站。
-- **WebUI 与管理 API**：提供节点监控、订阅管理、日志控制台、运行设置和诊断接口。
+- **GeoIP 分区路由**：全局启用后，所有代理池都会按节点地域生成 HTTP 路由入口。
+- **WebUI 与管理 API**：提供节点监控、代理池管理、订阅管理、日志控制台、系统设置和诊断接口。
 - **Docker 优先部署**：默认仅暴露管理端口，运行数据挂载在 `./data` 和 `./logs`。
 
 ## 快速开始
@@ -77,15 +77,13 @@ volumes:
 
 更多说明见 [SQLite Runtime Store](docs/sqlite-migration.md)。
 
-## 运行模式
+## 代理入口
 
-| 模式 | 说明 |
-| --- | --- |
-| `pool` | 所有可用节点共享一个本地 HTTP/SOCKS5 入口，并按调度策略选择出站节点 |
-| `multi-port` | 每个节点分配独立本地端口，适合需要固定访问某个节点的场景 |
-| `hybrid` | 同时启用代理池入口和每节点独立端口 |
+Easy Proxies 不再提供全局运行模式切换。代理池入口和节点独立端口可以同时存在：
 
-入口协议由 WebUI「系统设置」维护，支持 `mixed`、`http` 和 `socks5`。
+- WebUI「代理池管理」中可添加多个代理池；每个代理池有独立监听地址、端口、协议、调度策略和节点范围。
+- WebUI「节点管理」中可给节点设置本地端口；端口不为 `0` 时，该节点会额外暴露独立入口。
+- 入口协议支持 `mixed`、`http` 和 `socks5`。
 
 ## 节点与订阅
 
@@ -98,11 +96,11 @@ volumes:
 启用 GeoIP 后，系统会下载并维护 GeoIP 数据库，将节点按 `jp`、`kr`、`us`、`hk`、`tw`、`sg`、`other` 分组。GeoIP 路由器提供独立 HTTP 代理入口，可通过路径选择区域：
 
 ```bash
-curl -x http://user:pass@localhost:1221/jp/ http://example.com
-curl -x http://user:pass@localhost:1221/us/ http://example.com
+curl -x http://user:pass@localhost:1221/1/jp/ http://example.com
+curl -x http://user:pass@localhost:1221/1/us/ http://example.com
 ```
 
-数据库文件路径、最近更新时间和手动刷新按钮可在 WebUI 中查看。数据库实际存放位置由程序管理：Docker 中为 `/app/data`，本地运行为 `data/`。
+路径格式为 `/{proxy_pool_id}/{region}/`，例如 `/1/jp/`。数据库文件路径、最近更新时间和手动刷新按钮可在 WebUI「代理池管理」中查看。
 
 ## 管理 API
 
@@ -118,6 +116,8 @@ curl -x http://user:pass@localhost:1221/us/ http://example.com
 - `GET|POST /api/subscriptions`
 - `PUT|DELETE /api/subscriptions/{id}`
 - `POST /api/subscriptions/{id}/refresh`
+- `GET|POST /api/proxy-pools`
+- `PUT|DELETE /api/proxy-pools/{id}`
 - `GET|POST /api/nodes/config`
 - `PUT|DELETE|PATCH /api/nodes/config/{name}`
 - `POST /api/geoip/refresh`
@@ -140,7 +140,7 @@ docker build -t easy_proxies:dev .
 scripts/e2e/docker-proxy-flow.sh
 ```
 
-该脚本会构建临时镜像，启动本地 HTTP 目标、SOCKS 上游和 Easy Proxies 容器，并验证 `pool`、`multi-port`、`hybrid`、订阅刷新和重启持久化。
+该脚本会构建临时镜像，启动本地 HTTP 目标、SOCKS 上游和 Easy Proxies 容器，并验证代理入口、订阅刷新和重启持久化。
 
 ## 升级注意事项
 

@@ -13,6 +13,9 @@ import type {
   SubscriptionSource,
   SubscriptionSourcePayload,
   SubscriptionRefreshSettings,
+  ProxyPool,
+  ProxyPoolPayload,
+  ProxyPoolsResponse,
   ProbeSSEEvent,
   TrafficStreamEvent,
 } from '../types'
@@ -88,25 +91,12 @@ interface RawSettings {
   probe_target?: string
   log_level?: string
   skip_cert_verify?: boolean
-  mode?: string
-  listener?: {
-    address?: string
-    port?: number
-    protocol?: string
-    username?: string
-    password?: string
-  }
   multi_port?: {
     address?: string
     base_port?: number
     protocol?: string
     username?: string
     password?: string
-  }
-  pool?: {
-    mode?: string
-    failure_threshold?: number
-    blacklist_duration?: string
   }
   dns?: {
     enabled?: boolean
@@ -329,25 +319,12 @@ export async function updateSettings(settings: SettingsData): Promise<SettingsUp
       probe_target: settings.management_probe_target,
       log_level: settings.log_level,
       skip_cert_verify: settings.skip_cert_verify,
-      mode: settings.mode,
-      listener: {
-        address: settings.listener_address,
-        port: settings.listener_port,
-        protocol: settings.listener_protocol,
-        username: settings.listener_username,
-        password: settings.listener_password,
-      },
       multi_port: {
         address: settings.multi_port_address,
         base_port: settings.multi_port_base_port,
         protocol: settings.multi_port_protocol,
         username: settings.multi_port_username,
         password: settings.multi_port_password,
-      },
-      pool: {
-        mode: settings.pool_mode,
-        failure_threshold: settings.pool_failure_threshold,
-        blacklist_duration: settings.pool_blacklist_duration,
       },
       dns: {
         enabled: settings.dns_enabled,
@@ -383,26 +360,15 @@ export async function refreshGeoIPDatabase(): Promise<{ message: string; path?: 
 
 function normalizeSettings(raw: RawSettings): SettingsData {
   return {
-    mode: raw.mode || 'pool',
     log_level: raw.log_level || 'info',
     external_ip: raw.external_ip || '',
     skip_cert_verify: raw.skip_cert_verify || false,
-
-    listener_address: raw.listener?.address || '0.0.0.0',
-    listener_port: raw.listener?.port || 2323,
-    listener_protocol: raw.listener?.protocol || 'mixed',
-    listener_username: raw.listener?.username || '',
-    listener_password: raw.listener?.password || '',
 
     multi_port_address: raw.multi_port?.address || '0.0.0.0',
     multi_port_base_port: raw.multi_port?.base_port || 24000,
     multi_port_protocol: raw.multi_port?.protocol || 'mixed',
     multi_port_username: raw.multi_port?.username || '',
     multi_port_password: raw.multi_port?.password || '',
-
-    pool_mode: raw.pool?.mode || 'sequential',
-    pool_failure_threshold: raw.pool?.failure_threshold || 3,
-    pool_blacklist_duration: raw.pool?.blacklist_duration || '24h0m0s',
 
     dns_enabled: raw.dns?.enabled || false,
     dns_server: raw.dns?.server || '223.5.5.5',
@@ -479,6 +445,30 @@ export async function batchDeleteConfigNodes(names: string[]): Promise<{ message
     method: 'POST',
     body: JSON.stringify({ names }),
   })
+}
+
+// ---- Proxy Pool API ----
+
+export async function fetchProxyPools(): Promise<ProxyPoolsResponse> {
+  return request<ProxyPoolsResponse>('/api/proxy-pools')
+}
+
+export async function createProxyPool(payload: ProxyPoolPayload): Promise<{ proxy_pool: ProxyPool; message: string; need_reload?: boolean }> {
+  return request('/api/proxy-pools', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateProxyPool(id: number, payload: ProxyPoolPayload): Promise<{ proxy_pool: ProxyPool; message: string; need_reload?: boolean }> {
+  return request(`/api/proxy-pools/${encodeURIComponent(String(id))}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteProxyPool(id: number): Promise<{ message: string; need_reload?: boolean }> {
+  return request(`/api/proxy-pools/${encodeURIComponent(String(id))}`, { method: 'DELETE' })
 }
 
 // ---- Reload API ----

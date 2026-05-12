@@ -28,6 +28,7 @@ type Config struct {
 	Listener            ListenerConfig            `yaml:"listener"`
 	MultiPort           MultiPortConfig           `yaml:"multi_port"`
 	Pool                PoolConfig                `yaml:"pool"`
+	ProxyPools          []ProxyPoolConfig         `yaml:"proxy_pools" json:"proxy_pools"`
 	Management          ManagementConfig          `yaml:"management"`
 	SubscriptionRefresh SubscriptionRefreshConfig `yaml:"subscription_refresh"`
 	DNS                 DNSConfig                 `yaml:"dns"`
@@ -91,6 +92,19 @@ type PoolConfig struct {
 	Mode              string        `yaml:"mode"`
 	FailureThreshold  int           `yaml:"failure_threshold"`
 	BlacklistDuration time.Duration `yaml:"blacklist_duration"`
+}
+
+// ProxyPoolConfig defines an independent local proxy pool entry.
+type ProxyPoolConfig struct {
+	ID                int64          `yaml:"id" json:"id"`
+	Name              string         `yaml:"name" json:"name"`
+	Enabled           bool           `yaml:"enabled" json:"enabled"`
+	Listener          ListenerConfig `yaml:"listener" json:"listener"`
+	Mode              string         `yaml:"mode" json:"mode"`
+	FailureThreshold  int            `yaml:"failure_threshold" json:"failure_threshold"`
+	BlacklistDuration time.Duration  `yaml:"blacklist_duration" json:"blacklist_duration"`
+	AllNodes          bool           `yaml:"all_nodes" json:"all_nodes"`
+	NodeIDs           []int64        `yaml:"node_ids" json:"node_ids"`
 }
 
 // MultiPortConfig defines address/credential defaults for multi-port mode.
@@ -321,6 +335,11 @@ func RuntimeFromStore(ctx context.Context, st store.Store) (*Config, error) {
 		}
 	}
 	cfg.Nodes = nil
+	proxyPools, err := st.ListProxyPools(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load proxy pools: %w", err)
+	}
+	cfg.ProxyPools = proxyPoolsFromStore(proxyPools)
 	if err := cfg.NormalizeWithPortMap(nil); err != nil {
 		return nil, err
 	}
@@ -337,6 +356,7 @@ func SaveRuntime(ctx context.Context, st store.Store, cfg *Config) error {
 	}
 	saveCfg := *cfg
 	saveCfg.Nodes = nil
+	saveCfg.ProxyPools = nil
 	managementEnabled := true
 	saveCfg.Management.Enabled = &managementEnabled
 	saveCfg.Management.Listen = "0.0.0.0:9091"
@@ -350,6 +370,7 @@ func SaveRuntime(ctx context.Context, st store.Store, cfg *Config) error {
 
 // NodeConfig describes a single upstream proxy endpoint expressed as URI.
 type NodeConfig struct {
+	ID              int64      `yaml:"-" json:"id,omitempty"`
 	Name            string     `yaml:"name" json:"name"`
 	URI             string     `yaml:"uri" json:"uri"`
 	OutboundJSON    string     `yaml:"outbound_json,omitempty" json:"outbound_json,omitempty"`
@@ -463,6 +484,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	if err := c.normalizeInboundProtocols(); err != nil {
 		return err
 	}
+	if err := c.normalizeProxyPools(); err != nil {
+		return err
+	}
 	if err := c.normalizeDNSConfig(); err != nil {
 		return err
 	}
@@ -473,7 +497,13 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	managementEnabled := true
 	c.Management.Enabled = &managementEnabled
 	c.normalizeDatabasePath()
+	if err := c.applyEnvironmentOverrides(); err != nil {
+		return err
+	}
 	c.GeoIP.DatabasePath = DefaultGeoIPDatabasePath()
+	if c.GeoIP.Port == 0 {
+		c.GeoIP.Port = 1221
+	}
 	if c.GeoIP.AutoUpdateInterval <= 0 {
 		c.GeoIP.AutoUpdateInterval = 24 * time.Hour
 	}
@@ -495,9 +525,23 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	c.normalizeHealthCheckConfig()
 
 	// Build set of ports already assigned from portMap
-	usedPorts := make(map[uint16]bool)
-	if c.Mode == "hybrid" {
-		usedPorts[c.Listener.Port] = true
+	usedPorts := make(map[uint16]string)
+	if port, ok := ListenPort(c.Management.Listen); ok {
+		usedPorts[port] = "management"
+	}
+	for _, pool := range c.ProxyPools {
+		if pool.Enabled && pool.Listener.Port > 0 {
+			if owner := usedPorts[pool.Listener.Port]; owner != "" {
+				return fmt.Errorf("proxy pool %q port %d conflicts with %s", pool.Name, pool.Listener.Port, owner)
+			}
+			usedPorts[pool.Listener.Port] = pool.Name
+		}
+	}
+	if c.GeoIP.Enabled && c.GeoIP.Port > 0 {
+		if owner := usedPorts[c.GeoIP.Port]; owner != "" {
+			return fmt.Errorf("geoip port %d conflicts with %s", c.GeoIP.Port, owner)
+		}
+		usedPorts[c.GeoIP.Port] = "geoip"
 	}
 
 	// First pass: assign ports from portMap for existing nodes
@@ -526,38 +570,23 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		}
 
 		// Check if this node has a preserved port from portMap
-		if c.Mode == "multi-port" || c.Mode == "hybrid" {
-			nodeKey := c.Nodes[idx].NodeKey()
-			if existingPort, ok := portMap[nodeKey]; ok && existingPort > 0 {
-				c.Nodes[idx].Port = existingPort
-				usedPorts[existingPort] = true
-				log.Printf("✅ Preserved port %d for node %q", existingPort, c.Nodes[idx].Name)
+		nodeKey := c.Nodes[idx].NodeKey()
+		if existingPort, ok := portMap[nodeKey]; ok && existingPort > 0 {
+			c.Nodes[idx].Port = existingPort
+			log.Printf("✅ Preserved port %d for node %q", existingPort, c.Nodes[idx].Name)
+		}
+		if c.Nodes[idx].Port > 0 {
+			if owner := usedPorts[c.Nodes[idx].Port]; owner != "" {
+				return fmt.Errorf("node %q port %d conflicts with %s", c.Nodes[idx].Name, c.Nodes[idx].Port, owner)
 			}
+			usedPorts[c.Nodes[idx].Port] = c.Nodes[idx].Name
 		}
 	}
 
-	// Second pass: assign new ports for nodes without preserved ports
-	portCursor := c.MultiPort.BasePort
+	// Second pass: keep node local listeners opt-in. A zero port means the node
+	// does not expose a dedicated local inbound.
 	for idx := range c.Nodes {
-		if c.Nodes[idx].Port == 0 && (c.Mode == "multi-port" || c.Mode == "hybrid") {
-			// Find next available port that's not used
-			for usedPorts[portCursor] || !IsPortAvailable(c.MultiPort.Address, portCursor) {
-				portCursor++
-				if portCursor > 65535 {
-					return fmt.Errorf("no available ports found starting from %d", c.MultiPort.BasePort)
-				}
-			}
-			c.Nodes[idx].Port = portCursor
-			usedPorts[portCursor] = true
-			log.Printf("📌 Assigned new port %d for node %q", portCursor, c.Nodes[idx].Name)
-			portCursor++
-		} else if c.Nodes[idx].Port == 0 {
-			c.Nodes[idx].Port = portCursor
-			portCursor++
-		}
-
-		// Apply default credentials
-		if c.Mode == "multi-port" || c.Mode == "hybrid" {
+		if c.Nodes[idx].Port > 0 {
 			if c.Nodes[idx].Username == "" {
 				c.Nodes[idx].Username = c.MultiPort.Username
 				c.Nodes[idx].Password = c.MultiPort.Password
@@ -572,11 +601,95 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 
 	c.normalizeLogConfig()
 
-	if err := c.applyEnvironmentOverrides(); err != nil {
-		return err
-	}
-
 	return nil
+}
+
+func (c *Config) normalizeProxyPools() error {
+	if len(c.ProxyPools) == 0 {
+		c.ProxyPools = []ProxyPoolConfig{DefaultProxyPoolConfig()}
+	}
+	usedPorts := make(map[uint16]string)
+	for idx := range c.ProxyPools {
+		pool := &c.ProxyPools[idx]
+		pool.Name = strings.TrimSpace(pool.Name)
+		if pool.Name == "" {
+			pool.Name = fmt.Sprintf("代理池 %d", idx+1)
+		}
+		if pool.Listener.Address == "" {
+			pool.Listener.Address = "0.0.0.0"
+		}
+		if pool.Listener.Port == 0 {
+			pool.Listener.Port = uint16(2323 + idx)
+		}
+		protocol, err := NormalizeInboundProtocol(pool.Listener.Protocol)
+		if err != nil {
+			return fmt.Errorf("proxy_pools[%d].listener.protocol: %w", idx, err)
+		}
+		pool.Listener.Protocol = protocol
+		mode, err := NormalizePoolMode(pool.Mode)
+		if err != nil {
+			return fmt.Errorf("proxy_pools[%d].mode: %w", idx, err)
+		}
+		pool.Mode = mode
+		if pool.FailureThreshold <= 0 {
+			pool.FailureThreshold = 3
+		}
+		if pool.BlacklistDuration <= 0 {
+			pool.BlacklistDuration = 24 * time.Hour
+		}
+		if pool.Enabled && pool.Listener.Port > 0 {
+			if owner := usedPorts[pool.Listener.Port]; owner != "" {
+				return fmt.Errorf("proxy pool %q port %d conflicts with %q", pool.Name, pool.Listener.Port, owner)
+			}
+			usedPorts[pool.Listener.Port] = pool.Name
+		}
+	}
+	return nil
+}
+
+// DefaultProxyPoolConfig returns the first-run local proxy pool.
+func DefaultProxyPoolConfig() ProxyPoolConfig {
+	return ProxyPoolConfig{
+		ID:      1,
+		Name:    "默认代理池",
+		Enabled: true,
+		Listener: ListenerConfig{
+			Address:  "0.0.0.0",
+			Port:     2323,
+			Protocol: InboundProtocolMixed,
+		},
+		Mode:              "sequential",
+		FailureThreshold:  3,
+		BlacklistDuration: 24 * time.Hour,
+		AllNodes:          true,
+	}
+}
+
+func proxyPoolsFromStore(pools []store.ProxyPool) []ProxyPoolConfig {
+	if len(pools) == 0 {
+		return nil
+	}
+	out := make([]ProxyPoolConfig, 0, len(pools))
+	for _, pool := range pools {
+		out = append(out, ProxyPoolConfig{
+			ID:      pool.ID,
+			Name:    pool.Name,
+			Enabled: pool.Enabled,
+			Listener: ListenerConfig{
+				Address:  pool.ListenAddress,
+				Port:     pool.ListenPort,
+				Protocol: pool.Protocol,
+				Username: pool.Username,
+				Password: pool.Password,
+			},
+			Mode:              pool.Mode,
+			FailureThreshold:  pool.FailureThreshold,
+			BlacklistDuration: pool.BlacklistDuration,
+			AllNodes:          pool.AllNodes,
+			NodeIDs:           append([]int64(nil), pool.NodeIDs...),
+		})
+	}
+	return out
 }
 
 // normalizeLogConfig applies defaults to the log config.
@@ -632,6 +745,19 @@ func replaceListenPort(listen string, port uint16) string {
 		}
 	}
 	return net.JoinHostPort(host, strconv.Itoa(int(port)))
+}
+
+// ListenPort extracts the TCP port from a host:port listen address.
+func ListenPort(listen string) (uint16, bool) {
+	_, portValue, err := net.SplitHostPort(strings.TrimSpace(listen))
+	if err != nil {
+		return 0, false
+	}
+	port, err := strconv.ParseUint(portValue, 10, 16)
+	if err != nil || port == 0 {
+		return 0, false
+	}
+	return uint16(port), true
 }
 
 // ManagementEnabled reports whether the monitoring endpoint should run.

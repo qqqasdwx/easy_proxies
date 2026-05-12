@@ -1,5 +1,9 @@
 # EasyProxiesV2 功能合并开发计划
 
+> 状态：历史计划，已被后续 v2.0.0 破坏性重构取代。
+>
+> 当前项目已经不再兼容 `config.yaml` 和 `nodes.txt`，SQLite 是唯一运行持久化来源，管理端口和管理密码仅来自环境变量。本文保留为早期合并过程记录；涉及“兼容旧配置文件”“迁移旧配置文件”“写回 nodes.txt”的条目不再适用。当前设计以 `README.md`、`docs/sqlite-migration.md` 和实际代码为准。
+
 ## 背景与目标
 
 `references/EasyProxiesV2` 是基于早期 `easy_proxies` 二次开发的独立仓库，不保留上游 fork 历史。当前仓库是原项目最新版分支，已经包含 V2 缺失的后续修复与能力，例如 TUIC、Hysteria2 port hopping、GeoIP 独立路由、并发健康检查、手动 blacklist、日志轮转和更稳健的出站校验。

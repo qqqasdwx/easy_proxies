@@ -112,6 +112,47 @@ func TestSetNodeEnabledPersistsManualSource(t *testing.T) {
 	}
 }
 
+func TestListConfigNodesHydratesStoreNodeID(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	storeNode := &store.Node{
+		URI:     "http://user:pass@hydrated.example.com:8080",
+		Name:    "hydrated",
+		Source:  store.NodeSourceManual,
+		Enabled: true,
+	}
+	if err := st.CreateNode(ctx, storeNode); err != nil {
+		t.Fatalf("create store node: %v", err)
+	}
+
+	mgr := New(&config.Config{Nodes: []config.NodeConfig{{
+		Name: "hydrated",
+		URI:  storeNode.URI,
+	}}}, monitor.Config{}, WithStore(st))
+	nodes, err := mgr.ListConfigNodes(ctx)
+	if err != nil {
+		t.Fatalf("list config nodes: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("nodes = %+v, want one node", nodes)
+	}
+	if nodes[0].ID != storeNode.ID {
+		t.Fatalf("node ID = %d, want store ID %d", nodes[0].ID, storeNode.ID)
+	}
+	if nodes[0].Source != config.NodeSourceManual {
+		t.Fatalf("node source = %q, want manual", nodes[0].Source)
+	}
+}
+
 func TestDeleteNodeRemovesStoreOnlyNode(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
@@ -222,7 +263,7 @@ func TestCreateJSONOnlyNodePersistsStructuredFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create json-only node: %v", err)
 	}
-	if created.URI == "" || created.OutboundJSON == "" || created.InboundProtocol != "socks5" {
+	if created.ID == 0 || created.URI == "" || created.OutboundJSON == "" || created.InboundProtocol != "socks5" {
 		t.Fatalf("created node missing structured fields: %+v", created)
 	}
 
@@ -233,6 +274,9 @@ func TestCreateJSONOnlyNodePersistsStructuredFields(t *testing.T) {
 	if storeNode == nil || storeNode.URI != created.URI || storeNode.OutboundJSON == "" || storeNode.InboundProtocol != "socks5" {
 		t.Fatalf("stored node = %+v, want structured fields", storeNode)
 	}
+	if created.ID != storeNode.ID {
+		t.Fatalf("created node ID = %d, want store ID %d", created.ID, storeNode.ID)
+	}
 
 	listed, err := mgr.ListConfigNodes(ctx)
 	if err != nil {
@@ -240,6 +284,200 @@ func TestCreateJSONOnlyNodePersistsStructuredFields(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].OutboundJSON == "" || listed[0].InboundProtocol != "socks5" {
 		t.Fatalf("listed nodes = %+v", listed)
+	}
+}
+
+func TestUpdateNodeReturnsStoreID(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	storeNode := &store.Node{
+		URI:     "http://user:pass@update.example.com:8080",
+		Name:    "update-node",
+		Source:  store.NodeSourceManual,
+		Enabled: true,
+	}
+	if err := st.CreateNode(ctx, storeNode); err != nil {
+		t.Fatalf("create store node: %v", err)
+	}
+	mgr := New(&config.Config{Nodes: []config.NodeConfig{{
+		Name: "update-node",
+		URI:  storeNode.URI,
+	}}}, monitor.Config{}, WithStore(st))
+
+	updated, err := mgr.UpdateNode(ctx, "update-node", config.NodeConfig{
+		Name: "renamed-update-node",
+		URI:  storeNode.URI,
+	})
+	if err != nil {
+		t.Fatalf("update node: %v", err)
+	}
+	if updated.ID != storeNode.ID {
+		t.Fatalf("updated node ID = %d, want store ID %d", updated.ID, storeNode.ID)
+	}
+}
+
+func TestCreateNodeRejectsProxyPoolPortConflict(t *testing.T) {
+	ctx := context.Background()
+	mgr := New(&config.Config{
+		ProxyPools: []config.ProxyPoolConfig{{
+			Name:    "default",
+			Enabled: true,
+			Listener: config.ListenerConfig{
+				Address:  "127.0.0.1",
+				Port:     2323,
+				Protocol: config.InboundProtocolMixed,
+			},
+			Mode:     "sequential",
+			AllNodes: true,
+		}},
+	}, monitor.Config{})
+
+	_, err := mgr.CreateNode(ctx, config.NodeConfig{
+		Name: "conflict",
+		URI:  "http://user:pass@example.com:8080",
+		Port: 2323,
+	})
+	if !errors.Is(err, monitor.ErrNodeConflict) {
+		t.Fatalf("create error = %v, want node conflict", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "端口 2323 已被占用") {
+		t.Fatalf("create error = %v, want occupied port detail", err)
+	}
+}
+
+func TestCreateNodeRejectsDuplicateURI(t *testing.T) {
+	ctx := context.Background()
+	uri := "http://user:pass@example.com:8080"
+	mgr := New(&config.Config{Nodes: []config.NodeConfig{{
+		Name: "existing",
+		URI:  uri,
+	}}}, monitor.Config{})
+
+	_, err := mgr.CreateNode(ctx, config.NodeConfig{
+		Name: "duplicate",
+		URI:  uri,
+	})
+	if !errors.Is(err, monitor.ErrNodeConflict) {
+		t.Fatalf("create error = %v, want node conflict", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "节点地址已被 existing 使用") {
+		t.Fatalf("create error = %v, want duplicate address detail", err)
+	}
+
+	nodes, listErr := mgr.ListConfigNodes(ctx)
+	if listErr != nil {
+		t.Fatalf("list nodes: %v", listErr)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("nodes = %+v, want only existing node", nodes)
+	}
+}
+
+func TestUpdateNodeRejectsDuplicateURI(t *testing.T) {
+	ctx := context.Background()
+	firstURI := "http://user:pass@one.example.com:8080"
+	secondURI := "http://user:pass@two.example.com:8080"
+	mgr := New(&config.Config{Nodes: []config.NodeConfig{
+		{Name: "one", URI: firstURI},
+		{Name: "two", URI: secondURI},
+	}}, monitor.Config{})
+
+	_, err := mgr.UpdateNode(ctx, "two", config.NodeConfig{
+		Name: "two",
+		URI:  firstURI,
+	})
+	if !errors.Is(err, monitor.ErrNodeConflict) {
+		t.Fatalf("update error = %v, want node conflict", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "节点地址已被 one 使用") {
+		t.Fatalf("update error = %v, want duplicate address detail", err)
+	}
+}
+
+func TestCreateNodeRejectsGeoIPPortConflict(t *testing.T) {
+	ctx := context.Background()
+	mgr := New(&config.Config{
+		GeoIP: config.GeoIPConfig{
+			Enabled: true,
+			Port:    1221,
+		},
+	}, monitor.Config{})
+
+	_, err := mgr.CreateNode(ctx, config.NodeConfig{
+		Name: "geoip-conflict",
+		URI:  "http://user:pass@example.com:8080",
+		Port: 1221,
+	})
+	if !errors.Is(err, monitor.ErrNodeConflict) {
+		t.Fatalf("create error = %v, want node conflict", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "端口 1221 已被占用") {
+		t.Fatalf("create error = %v, want occupied port detail", err)
+	}
+}
+
+func TestCreateNodeRejectsManagementPortConflict(t *testing.T) {
+	ctx := context.Background()
+	mgr := New(&config.Config{
+		Management: config.ManagementConfig{Listen: "0.0.0.0:9091"},
+	}, monitor.Config{})
+
+	_, err := mgr.CreateNode(ctx, config.NodeConfig{
+		Name: "management-conflict",
+		URI:  "http://user:pass@example.com:8080",
+		Port: 9091,
+	})
+	if !errors.Is(err, monitor.ErrNodeConflict) {
+		t.Fatalf("create error = %v, want node conflict", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "端口 9091 已被占用") {
+		t.Fatalf("create error = %v, want occupied port detail", err)
+	}
+}
+
+func TestTriggerReloadWithoutConfigReturnsError(t *testing.T) {
+	mgr := New(nil, monitor.Config{})
+
+	err := mgr.TriggerReload(context.Background())
+	if !errors.Is(err, errConfigUnavailable) {
+		t.Fatalf("reload error = %v, want config unavailable", err)
+	}
+}
+
+func TestFirstEnabledProxyPoolSkipsDisabledPools(t *testing.T) {
+	pool := firstEnabledProxyPool([]config.ProxyPoolConfig{
+		{
+			ID:      1,
+			Name:    "disabled",
+			Enabled: false,
+			Listener: config.ListenerConfig{
+				Address:  "127.0.0.1",
+				Port:     2323,
+				Username: "disabled-user",
+			},
+		},
+		{
+			ID:      2,
+			Name:    "enabled",
+			Enabled: true,
+			Listener: config.ListenerConfig{
+				Address:  "127.0.0.2",
+				Port:     2324,
+				Username: "enabled-user",
+			},
+		},
+	})
+	if pool == nil || pool.ID != 2 || pool.Listener.Username != "enabled-user" {
+		t.Fatalf("first enabled pool = %+v, want pool 2", pool)
 	}
 }
 
@@ -272,6 +510,108 @@ func TestApplyStoreNodeStateAddsEnabledStoreNodes(t *testing.T) {
 	}
 	if len(cfg.Nodes) != 1 || cfg.Nodes[0].Name != "store-node" {
 		t.Fatalf("cfg nodes = %+v, want store node", cfg.Nodes)
+	}
+}
+
+func TestApplyStoreNodeStateHydratesExistingNodeID(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	storeNode := &store.Node{
+		URI:            "http://user:pass@subscription.example.com:8080",
+		Name:           "subscription-node",
+		Source:         store.NodeSourceSubscription,
+		SubscriptionID: 7,
+		Enabled:        true,
+	}
+	if err := st.CreateNode(ctx, storeNode); err != nil {
+		t.Fatalf("create store node: %v", err)
+	}
+
+	cfg := &config.Config{Nodes: []config.NodeConfig{{
+		Name:   "subscription-node",
+		URI:    storeNode.URI,
+		Source: config.NodeSourceSubscription,
+	}}}
+	mgr := New(cfg, monitor.Config{}, WithStore(st))
+	if err := mgr.applyStoreNodeState(ctx, cfg); err != nil {
+		t.Fatalf("apply store node state: %v", err)
+	}
+	if len(cfg.Nodes) != 1 {
+		t.Fatalf("cfg nodes = %+v, want one node", cfg.Nodes)
+	}
+	if cfg.Nodes[0].ID != storeNode.ID {
+		t.Fatalf("node ID = %d, want store ID %d", cfg.Nodes[0].ID, storeNode.ID)
+	}
+	if cfg.Nodes[0].Source != config.NodeSourceSubscription {
+		t.Fatalf("node source = %q, want subscription", cfg.Nodes[0].Source)
+	}
+}
+
+func TestCurrentConfigClonesProxyPools(t *testing.T) {
+	cfg := &config.Config{
+		ProxyPools: []config.ProxyPoolConfig{{
+			ID:       7,
+			Name:     "selected",
+			AllNodes: false,
+			NodeIDs:  []int64{101, 202},
+		}},
+	}
+	mgr := New(cfg, monitor.Config{})
+
+	cloned := mgr.CurrentConfig()
+	if cloned == nil {
+		t.Fatal("CurrentConfig returned nil")
+	}
+	cloned.ProxyPools[0].Name = "mutated"
+	cloned.ProxyPools[0].NodeIDs[0] = 999
+
+	again := mgr.CurrentConfig()
+	if again.ProxyPools[0].Name != "selected" {
+		t.Fatalf("proxy pool name = %q, want selected", again.ProxyPools[0].Name)
+	}
+	if again.ProxyPools[0].NodeIDs[0] != 101 {
+		t.Fatalf("proxy pool node id = %d, want 101", again.ProxyPools[0].NodeIDs[0])
+	}
+}
+
+func TestGeoIPRouterCredentialsUseFirstAuthenticatedEnabledPool(t *testing.T) {
+	username, password := geoIPRouterCredentials(&config.Config{
+		Listener:  config.ListenerConfig{Username: "legacy-user", Password: "legacy-pass"},
+		MultiPort: config.MultiPortConfig{Username: "multi-user", Password: "multi-pass"},
+		ProxyPools: []config.ProxyPoolConfig{
+			{
+				Name:    "disabled",
+				Enabled: false,
+				Listener: config.ListenerConfig{
+					Username: "disabled-user",
+					Password: "disabled-pass",
+				},
+			},
+			{
+				Name:    "public",
+				Enabled: true,
+			},
+			{
+				Name:    "authenticated",
+				Enabled: true,
+				Listener: config.ListenerConfig{
+					Username: "pool-user",
+					Password: "pool-pass",
+				},
+			},
+		},
+	})
+	if username != "pool-user" || password != "pool-pass" {
+		t.Fatalf("credentials = %q/%q, want authenticated pool credentials", username, password)
 	}
 }
 

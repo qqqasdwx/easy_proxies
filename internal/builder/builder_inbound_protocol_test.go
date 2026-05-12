@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"easy_proxies/internal/config"
+	poolout "easy_proxies/internal/outbound/pool"
 
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
@@ -220,6 +221,118 @@ func TestBuildSkipsDisabledNodes(t *testing.T) {
 		if outbound.Tag == "disabled-node" {
 			t.Fatal("disabled node outbound was built")
 		}
+	}
+}
+
+func TestProxyPoolMembersEmptyExplicitSelectionDoesNotSelectAll(t *testing.T) {
+	members := proxyPoolMembers(config.ProxyPoolConfig{
+		AllNodes: false,
+		NodeIDs:  nil,
+	}, []string{"node-1", "node-2"}, map[int64]string{
+		1: "node-1",
+		2: "node-2",
+	})
+	if len(members) != 0 {
+		t.Fatalf("members = %+v, want empty explicit selection", members)
+	}
+
+	allMembers := proxyPoolMembers(config.ProxyPoolConfig{
+		AllNodes: true,
+	}, []string{"node-1", "node-2"}, nil)
+	if len(allMembers) != 2 {
+		t.Fatalf("all members = %+v, want all nodes", allMembers)
+	}
+}
+
+func TestBuildUsesSelectedProxyPoolNodeIDs(t *testing.T) {
+	cfg := &config.Config{
+		MultiPort: config.MultiPortConfig{
+			Address:  "127.0.0.1",
+			BasePort: 24000,
+			Protocol: config.InboundProtocolMixed,
+		},
+		Pool: config.PoolConfig{
+			Mode:              "sequential",
+			FailureThreshold:  3,
+			BlacklistDuration: time.Hour,
+		},
+		ProxyPools: []config.ProxyPoolConfig{{
+			ID:      7,
+			Name:    "selected",
+			Enabled: true,
+			Listener: config.ListenerConfig{
+				Address:  "127.0.0.1",
+				Port:     2323,
+				Protocol: config.InboundProtocolMixed,
+			},
+			Mode:              "sequential",
+			FailureThreshold:  3,
+			BlacklistDuration: time.Hour,
+			AllNodes:          false,
+			NodeIDs:           []int64{202},
+		}},
+		Nodes: []config.NodeConfig{
+			{ID: 101, Name: "node-one", URI: "http://user:pass@one.example.com:8080"},
+			{ID: 202, Name: "node-two", URI: "http://user:pass@two.example.com:8080"},
+		},
+	}
+
+	opts, err := Build(cfg)
+	if err != nil {
+		t.Fatalf("build options: %v", err)
+	}
+
+	var poolOptions *poolout.Options
+	for _, outbound := range opts.Outbounds {
+		if outbound.Tag != "proxy-pool-7" {
+			continue
+		}
+		var ok bool
+		poolOptions, ok = outbound.Options.(*poolout.Options)
+		if !ok {
+			t.Fatalf("proxy pool options type = %T", outbound.Options)
+		}
+		break
+	}
+	if poolOptions == nil {
+		t.Fatal("proxy-pool-7 outbound not found")
+	}
+	if len(poolOptions.Members) != 1 || poolOptions.Members[0] != "node-two" {
+		t.Fatalf("proxy pool members = %+v, want [node-two]", poolOptions.Members)
+	}
+	if _, ok := poolOptions.Metadata["node-one"]; ok {
+		t.Fatalf("unselected node metadata was included: %+v", poolOptions.Metadata)
+	}
+}
+
+func TestGeoIPListenAddressUsesFirstEnabledProxyPool(t *testing.T) {
+	cfg := &config.Config{
+		Listener: config.ListenerConfig{Address: "10.0.0.1"},
+		GeoIP:    config.GeoIPConfig{Enabled: true},
+	}
+	got := geoIPListenAddress(cfg, []config.ProxyPoolConfig{
+		{
+			Name:    "disabled",
+			Enabled: false,
+			Listener: config.ListenerConfig{
+				Address: "192.0.2.10",
+			},
+		},
+		{
+			Name:    "enabled",
+			Enabled: true,
+			Listener: config.ListenerConfig{
+				Address: "127.0.0.1",
+			},
+		},
+	})
+	if got != "127.0.0.1" {
+		t.Fatalf("geoip listen address = %q, want first enabled proxy pool address", got)
+	}
+
+	cfg.GeoIP.Listen = "127.0.0.2"
+	if got := geoIPListenAddress(cfg, nil); got != "127.0.0.2" {
+		t.Fatalf("geoip explicit listen address = %q, want 127.0.0.2", got)
 	}
 }
 

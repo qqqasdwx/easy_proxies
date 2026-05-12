@@ -82,17 +82,9 @@ export interface LogsResponse {
 
 export interface SettingsData {
   // Global
-  mode: string
   log_level: string
   external_ip: string
   skip_cert_verify: boolean
-
-  // Listener
-  listener_address: string
-  listener_port: number
-  listener_protocol: string
-  listener_username: string
-  listener_password: string
 
   // Multi-port
   multi_port_address: string
@@ -100,11 +92,6 @@ export interface SettingsData {
   multi_port_protocol: string
   multi_port_username: string
   multi_port_password: string
-
-  // Pool
-  pool_mode: string
-  pool_failure_threshold: number
-  pool_blacklist_duration: string
 
   // DNS
   dns_enabled: boolean
@@ -162,6 +149,7 @@ export interface ConfigNodePayload {
 }
 
 export interface ConfigNodeConfig {
+  id?: number
   name: string
   uri: string
   outbound_json?: string
@@ -186,6 +174,45 @@ export interface NodeURIParseResponse {
   name: string
   uri: string
   outbound_json: string
+}
+
+// ---- Proxy pool types ----
+
+export interface ProxyPool {
+  id: number
+  name: string
+  enabled: boolean
+  listen_address: string
+  listen_port: number
+  protocol: string
+  username: string
+  password: string
+  mode: string
+  failure_threshold: number
+  blacklist_duration: string
+  all_nodes: boolean
+  node_ids: number[]
+  created_at?: string
+  updated_at?: string
+}
+
+export interface ProxyPoolPayload {
+  name: string
+  enabled: boolean
+  listen_address: string
+  listen_port: number
+  protocol: string
+  username: string
+  password: string
+  mode: string
+  failure_threshold: number
+  blacklist_duration: string
+  all_nodes: boolean
+  node_ids: number[]
+}
+
+export interface ProxyPoolsResponse {
+  proxy_pools: ProxyPool[]
 }
 
 // ---- Subscription types ----

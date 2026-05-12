@@ -944,6 +944,185 @@ func (s *sqliteStore) ReplaceSubscriptionSources(ctx context.Context, sources []
 	})
 }
 
+// ===================== Proxy pools =====================
+
+func (s *sqliteStore) ListProxyPools(ctx context.Context) ([]ProxyPool, error) {
+	rows, err := s.conn().QueryContext(ctx,
+		`SELECT id, name, enabled, listen_address, listen_port, protocol, username, password,
+		 mode, failure_threshold, blacklist_duration, all_nodes, created_at, updated_at
+		 FROM proxy_pools ORDER BY id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list proxy pools: %w", err)
+	}
+	defer rows.Close()
+
+	pools := make([]ProxyPool, 0)
+	for rows.Next() {
+		pool, err := scanProxyPoolRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		pools = append(pools, pool)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for idx := range pools {
+		nodeIDs, err := s.listProxyPoolNodeIDs(ctx, pools[idx].ID)
+		if err != nil {
+			return nil, err
+		}
+		pools[idx].NodeIDs = nodeIDs
+	}
+	return pools, nil
+}
+
+func (s *sqliteStore) GetProxyPool(ctx context.Context, id int64) (*ProxyPool, error) {
+	row := s.conn().QueryRowContext(ctx,
+		`SELECT id, name, enabled, listen_address, listen_port, protocol, username, password,
+		 mode, failure_threshold, blacklist_duration, all_nodes, created_at, updated_at
+		 FROM proxy_pools WHERE id = ?`, id)
+	pool, err := scanProxyPool(row)
+	if err != nil || pool == nil {
+		return pool, err
+	}
+	nodeIDs, err := s.listProxyPoolNodeIDs(ctx, pool.ID)
+	if err != nil {
+		return nil, err
+	}
+	pool.NodeIDs = nodeIDs
+	return pool, nil
+}
+
+func (s *sqliteStore) CreateProxyPool(ctx context.Context, pool *ProxyPool) error {
+	if pool == nil {
+		return fmt.Errorf("proxy pool is nil")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if pool.BlacklistDuration <= 0 {
+		pool.BlacklistDuration = 24 * time.Hour
+	}
+	execFn := func(txStore *sqliteStore) error {
+		result, err := txStore.conn().ExecContext(ctx,
+			`INSERT INTO proxy_pools
+			 (name, enabled, listen_address, listen_port, protocol, username, password,
+			  mode, failure_threshold, blacklist_duration, all_nodes, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			strings.TrimSpace(pool.Name), boolToInt(pool.Enabled), strings.TrimSpace(pool.ListenAddress), pool.ListenPort,
+			strings.TrimSpace(pool.Protocol), pool.Username, pool.Password, strings.TrimSpace(pool.Mode),
+			pool.FailureThreshold, int64(pool.BlacklistDuration), boolToInt(pool.AllNodes), now, now,
+		)
+		if err != nil {
+			return fmt.Errorf("create proxy pool: %w", err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("get proxy pool id: %w", err)
+		}
+		pool.ID = id
+		pool.CreatedAt = parseTime(now)
+		pool.UpdatedAt = parseTime(now)
+		return txStore.replaceProxyPoolNodes(ctx, pool.ID, pool.NodeIDs)
+	}
+	if s.tx != nil {
+		return execFn(s)
+	}
+	return s.WithTx(ctx, func(tx Store) error {
+		return execFn(tx.(*sqliteStore))
+	})
+}
+
+func (s *sqliteStore) UpdateProxyPool(ctx context.Context, pool *ProxyPool) error {
+	if pool == nil {
+		return fmt.Errorf("proxy pool is nil")
+	}
+	if pool.ID <= 0 {
+		return fmt.Errorf("proxy pool id is required")
+	}
+	if pool.BlacklistDuration <= 0 {
+		pool.BlacklistDuration = 24 * time.Hour
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	execFn := func(txStore *sqliteStore) error {
+		result, err := txStore.conn().ExecContext(ctx,
+			`UPDATE proxy_pools
+			 SET name=?, enabled=?, listen_address=?, listen_port=?, protocol=?, username=?, password=?,
+			     mode=?, failure_threshold=?, blacklist_duration=?, all_nodes=?, updated_at=?
+			 WHERE id=?`,
+			strings.TrimSpace(pool.Name), boolToInt(pool.Enabled), strings.TrimSpace(pool.ListenAddress), pool.ListenPort,
+			strings.TrimSpace(pool.Protocol), pool.Username, pool.Password, strings.TrimSpace(pool.Mode),
+			pool.FailureThreshold, int64(pool.BlacklistDuration), boolToInt(pool.AllNodes), now, pool.ID,
+		)
+		if err != nil {
+			return fmt.Errorf("update proxy pool %d: %w", pool.ID, err)
+		}
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			return fmt.Errorf("proxy pool %d not found", pool.ID)
+		}
+		pool.UpdatedAt = parseTime(now)
+		return txStore.replaceProxyPoolNodes(ctx, pool.ID, pool.NodeIDs)
+	}
+	if s.tx != nil {
+		return execFn(s)
+	}
+	return s.WithTx(ctx, func(tx Store) error {
+		return execFn(tx.(*sqliteStore))
+	})
+}
+
+func (s *sqliteStore) DeleteProxyPool(ctx context.Context, id int64) error {
+	result, err := s.conn().ExecContext(ctx, "DELETE FROM proxy_pools WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete proxy pool %d: %w", id, err)
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("proxy pool %d not found", id)
+	}
+	return nil
+}
+
+func (s *sqliteStore) listProxyPoolNodeIDs(ctx context.Context, poolID int64) ([]int64, error) {
+	rows, err := s.conn().QueryContext(ctx, "SELECT node_id FROM proxy_pool_nodes WHERE pool_id = ? ORDER BY node_id ASC", poolID)
+	if err != nil {
+		return nil, fmt.Errorf("list proxy pool nodes: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *sqliteStore) replaceProxyPoolNodes(ctx context.Context, poolID int64, nodeIDs []int64) error {
+	if _, err := s.conn().ExecContext(ctx, "DELETE FROM proxy_pool_nodes WHERE pool_id = ?", poolID); err != nil {
+		return fmt.Errorf("clear proxy pool nodes: %w", err)
+	}
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	stmt, err := s.conn().PrepareContext(ctx, "INSERT OR IGNORE INTO proxy_pool_nodes (pool_id, node_id) VALUES (?, ?)")
+	if err != nil {
+		return fmt.Errorf("prepare proxy pool node insert: %w", err)
+	}
+	defer stmt.Close()
+	for _, nodeID := range nodeIDs {
+		if nodeID <= 0 {
+			continue
+		}
+		if _, err := stmt.ExecContext(ctx, poolID, nodeID); err != nil {
+			return fmt.Errorf("insert proxy pool node %d: %w", nodeID, err)
+		}
+	}
+	return nil
+}
+
 // ===================== Lifecycle =====================
 
 func (s *sqliteStore) Close() error {
@@ -1045,6 +1224,45 @@ func scanSubscriptionSource(row *sql.Row) (*SubscriptionSource, error) {
 	src.CreatedAt = parseTime(createdAtStr)
 	src.UpdatedAt = parseTime(updatedAtStr)
 	return &src, nil
+}
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanProxyPool(row scanner) (*ProxyPool, error) {
+	var pool ProxyPool
+	var enabled, allNodes int
+	var durationNanos int64
+	var createdAtStr, updatedAtStr string
+	err := row.Scan(
+		&pool.ID, &pool.Name, &enabled, &pool.ListenAddress, &pool.ListenPort, &pool.Protocol,
+		&pool.Username, &pool.Password, &pool.Mode, &pool.FailureThreshold, &durationNanos,
+		&allNodes, &createdAtStr, &updatedAtStr,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan proxy pool: %w", err)
+	}
+	pool.Enabled = enabled != 0
+	pool.AllNodes = allNodes != 0
+	pool.BlacklistDuration = time.Duration(durationNanos)
+	pool.CreatedAt = parseTime(createdAtStr)
+	pool.UpdatedAt = parseTime(updatedAtStr)
+	return &pool, nil
+}
+
+func scanProxyPoolRows(rows *sql.Rows) (ProxyPool, error) {
+	pool, err := scanProxyPool(rows)
+	if err != nil {
+		return ProxyPool{}, err
+	}
+	if pool == nil {
+		return ProxyPool{}, nil
+	}
+	return *pool, nil
 }
 
 func parseTime(s string) time.Time {

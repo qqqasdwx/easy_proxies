@@ -5,12 +5,13 @@ import DebugPanel from './components/DebugPanel'
 import LogsPanel from './components/LogsPanel'
 import SettingsPanel from './components/SettingsPanel'
 import SubscriptionsPanel from './components/SubscriptionsPanel'
+import ProxyPoolsPanel from './components/ProxyPoolsPanel'
 import LoginPage from './components/LoginPage'
 import { checkAuth, logout } from './api/client'
 import packageJson from '../package.json'
 
 type AuthState = 'loading' | 'need_login' | 'authenticated'
-type TabId = 'monitor' | 'manage' | 'subscriptions' | 'debug' | 'logs' | 'settings'
+type TabId = 'monitor' | 'manage' | 'proxy-pools' | 'subscriptions' | 'debug' | 'logs' | 'settings'
 
 const ALL_THEMES = [
   'light', 'dark', 'cupcake', 'bumblebee', 'emerald', 'corporate',
@@ -39,6 +40,16 @@ const MENU_ITEMS: { id: TabId; label: string; icon: React.ReactNode; desc: strin
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+      </svg>
+    ),
+  },
+  {
+    id: 'proxy-pools',
+    label: '代理池管理',
+    desc: '入口与调度',
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7h16M4 12h16M4 17h16" />
       </svg>
     ),
   },
@@ -85,7 +96,7 @@ const MENU_ITEMS: { id: TabId; label: string; icon: React.ReactNode; desc: strin
   },
 ]
 
-const VALID_TABS: TabId[] = ['monitor', 'manage', 'subscriptions', 'debug', 'logs', 'settings']
+const VALID_TABS: TabId[] = ['monitor', 'manage', 'proxy-pools', 'subscriptions', 'debug', 'logs', 'settings']
 const THEME_STORAGE_KEY = 'ep-theme'
 
 const APP_VERSION = `v${packageJson.version}`
@@ -191,6 +202,7 @@ function App() {
     switch (activeTab) {
       case 'monitor': return <MonitorPanel />
       case 'manage': return <ManagePanel />
+      case 'proxy-pools': return <ProxyPoolsPanel />
       case 'subscriptions': return <SubscriptionsPanel />
       case 'debug': return <DebugPanel />
       case 'logs': return <LogsPanel />
