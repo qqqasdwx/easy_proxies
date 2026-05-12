@@ -117,8 +117,30 @@ export default function ProxyPoolsPanel() {
     setError('')
   }
 
+  const collectUsedPorts = (excludePoolID?: number) => {
+    const used = new Set<number>()
+    for (const pool of pools) {
+      if (pool.id !== excludePoolID && pool.listen_port > 0) used.add(pool.listen_port)
+    }
+    for (const node of nodes) {
+      const port = node.port || 0
+      if (port > 0) used.add(port)
+    }
+    if (settings?.geoip_enabled && (settings.geoip_port || 0) > 0) used.add(settings.geoip_port)
+    return used
+  }
+
+  const listenerPortConflict = (port: number, excludePoolID?: number) => {
+    const pool = pools.find(item => item.id !== excludePoolID && item.listen_port === port)
+    if (pool) return `监听端口 ${port} 已被代理池「${pool.name}」使用`
+    const node = nodes.find(item => item.port === port)
+    if (node) return `监听端口 ${port} 已被节点「${node.name}」使用`
+    if (settings?.geoip_enabled && settings.geoip_port === port) return `监听端口 ${port} 已被 GeoIP 路由使用`
+    return ''
+  }
+
   const createDraft = () => {
-    const usedPorts = new Set(pools.map(pool => pool.listen_port))
+    const usedPorts = collectUsedPorts()
     let nextPort = 2323
     while (usedPorts.has(nextPort)) nextPort++
     setEditingID(null)
@@ -137,6 +159,9 @@ export default function ProxyPoolsPanel() {
 
   const savePool = async () => {
     if (!form.name.trim()) { setError('代理池名称不能为空'); return }
+    if (form.listen_port < 1 || form.listen_port > 65535) { setError('监听端口必须在 1-65535 之间'); return }
+    const conflict = listenerPortConflict(form.listen_port, editingID ?? undefined)
+    if (conflict) { setError(conflict); return }
     if (!form.all_nodes && form.node_ids.length === 0) { setError('请选择节点或启用全部节点'); return }
     setSaving(true)
     setError('')
