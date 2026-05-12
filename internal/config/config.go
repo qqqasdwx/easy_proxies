@@ -498,6 +498,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	c.Management.Enabled = &managementEnabled
 	c.normalizeDatabasePath()
 	c.GeoIP.DatabasePath = DefaultGeoIPDatabasePath()
+	if c.GeoIP.Port == 0 {
+		c.GeoIP.Port = 1221
+	}
 	if c.GeoIP.AutoUpdateInterval <= 0 {
 		c.GeoIP.AutoUpdateInterval = 24 * time.Hour
 	}

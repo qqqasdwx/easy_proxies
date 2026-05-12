@@ -216,3 +216,13 @@ func TestNormalizeWithPortMapPreservesNodePortWithoutSelfConflict(t *testing.T) 
 		t.Fatalf("node port = %d, want 24000", cfg.Nodes[0].Port)
 	}
 }
+
+func TestNormalizeWithPortMapDefaultsGeoIPPort(t *testing.T) {
+	cfg := Config{}
+	if err := cfg.NormalizeWithPortMap(nil); err != nil {
+		t.Fatalf("normalize config: %v", err)
+	}
+	if cfg.GeoIP.Port != 1221 {
+		t.Fatalf("geoip port = %d, want 1221", cfg.GeoIP.Port)
+	}
+}
