@@ -141,6 +141,30 @@ func TestNormalizeInboundProtocolRejectsInvalidValue(t *testing.T) {
 	}
 }
 
+func TestNormalizeRuntimeEnums(t *testing.T) {
+	if mode, err := NormalizeMode("multi_port"); err != nil || mode != "multi-port" {
+		t.Fatalf("NormalizeMode = %q, %v; want multi-port", mode, err)
+	}
+	if poolMode, err := NormalizePoolMode("BALANCE"); err != nil || poolMode != "balance" {
+		t.Fatalf("NormalizePoolMode = %q, %v; want balance", poolMode, err)
+	}
+	if logLevel, err := NormalizeLogLevel("WARN"); err != nil || logLevel != "warn" {
+		t.Fatalf("NormalizeLogLevel = %q, %v; want warn", logLevel, err)
+	}
+}
+
+func TestNormalizeRuntimeEnumsRejectInvalidValues(t *testing.T) {
+	if _, err := NormalizeMode("invalid"); err == nil {
+		t.Fatal("expected invalid runtime mode error")
+	}
+	if _, err := NormalizePoolMode("least_conn"); err == nil {
+		t.Fatal("expected invalid pool mode error")
+	}
+	if _, err := NormalizeLogLevel("verbose"); err == nil {
+		t.Fatal("expected invalid log level error")
+	}
+}
+
 func TestNormalizeWithPortMapNormalizesInboundProtocols(t *testing.T) {
 	cfg := Config{
 		Listener:  ListenerConfig{Protocol: "http"},

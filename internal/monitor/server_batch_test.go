@@ -209,6 +209,47 @@ func TestRespondNodeErrorStillHandlesWrappedSentinels(t *testing.T) {
 	}
 }
 
+func TestHandleSettingsRejectsInvalidValuesWithoutMutatingConfig(t *testing.T) {
+	cfg := &config.Config{
+		Mode:           "pool",
+		LogLevel:       "info",
+		Listener:       config.ListenerConfig{Address: "0.0.0.0", Port: 2323, Protocol: config.InboundProtocolMixed},
+		MultiPort:      config.MultiPortConfig{Address: "0.0.0.0", BasePort: 24000, Protocol: config.InboundProtocolMixed},
+		Pool:           config.PoolConfig{Mode: "sequential", FailureThreshold: 3, BlacklistDuration: 24 * time.Hour},
+		Management:     config.ManagementConfig{ProbeTarget: "www.apple.com:80"},
+		GeoIP:          config.GeoIPConfig{AutoUpdateInterval: 24 * time.Hour},
+		HealthCheck:    config.HealthCheckConfig{Interval: 5 * time.Minute, Timeout: 10 * time.Second, Concurrency: 8},
+		DNS:            config.DNSConfig{Strategy: config.DNSStrategyPreferIPv4},
+		SkipCertVerify: false,
+		SubscriptionRefresh: config.SubscriptionRefreshConfig{
+			Interval:           time.Hour,
+			Timeout:            30 * time.Second,
+			HealthCheckTimeout: time.Minute,
+			DrainTimeout:       30 * time.Second,
+			MinAvailableNodes:  1,
+		},
+	}
+	server := &Server{cfgSrc: cfg, logger: log.Default()}
+	body := bytes.NewBufferString(`{
+		"mode":"invalid",
+		"log_level":"verbose",
+		"pool":{"mode":"least_conn","failure_threshold":3,"blacklist_duration":"bad"},
+		"geoip":{"enabled":true,"auto_update_interval":"bad"},
+		"health_check":{"interval":"0s","timeout":"10s","concurrency":8}
+	}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", body)
+	rec := httptest.NewRecorder()
+
+	server.handleSettings(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if cfg.Mode != "pool" || cfg.LogLevel != "info" || cfg.Pool.Mode != "sequential" || cfg.GeoIP.Enabled {
+		t.Fatalf("config mutated after invalid request: %+v", cfg)
+	}
+}
+
 func TestHandleAuthLogoutDeletesSessionAndClearsCookie(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
