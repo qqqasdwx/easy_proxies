@@ -583,6 +583,38 @@ func TestCurrentConfigClonesProxyPools(t *testing.T) {
 	}
 }
 
+func TestGeoIPRouterCredentialsUseFirstAuthenticatedEnabledPool(t *testing.T) {
+	username, password := geoIPRouterCredentials(&config.Config{
+		Listener:  config.ListenerConfig{Username: "legacy-user", Password: "legacy-pass"},
+		MultiPort: config.MultiPortConfig{Username: "multi-user", Password: "multi-pass"},
+		ProxyPools: []config.ProxyPoolConfig{
+			{
+				Name:    "disabled",
+				Enabled: false,
+				Listener: config.ListenerConfig{
+					Username: "disabled-user",
+					Password: "disabled-pass",
+				},
+			},
+			{
+				Name:    "public",
+				Enabled: true,
+			},
+			{
+				Name:    "authenticated",
+				Enabled: true,
+				Listener: config.ListenerConfig{
+					Username: "pool-user",
+					Password: "pool-pass",
+				},
+			},
+		},
+	})
+	if username != "pool-user" || password != "pool-pass" {
+		t.Fatalf("credentials = %q/%q, want authenticated pool credentials", username, password)
+	}
+}
+
 func TestRestoreAndFlushTrafficStats(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))

@@ -175,8 +175,10 @@ func monitorProxyCredentials(cfg *config.Config) (string, string) {
 	if cfg == nil {
 		return "", ""
 	}
-	if proxyPool := firstEnabledProxyPool(cfg.ProxyPools); proxyPool != nil && proxyPool.Listener.Username != "" {
-		return proxyPool.Listener.Username, proxyPool.Listener.Password
+	for _, proxyPool := range cfg.ProxyPools {
+		if proxyPool.Enabled && proxyPool.Listener.Username != "" {
+			return proxyPool.Listener.Username, proxyPool.Listener.Password
+		}
 	}
 	if cfg.MultiPort.Username != "" {
 		return cfg.MultiPort.Username, cfg.MultiPort.Password

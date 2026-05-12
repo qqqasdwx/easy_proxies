@@ -324,6 +324,29 @@ func TestMonitorProxyCredentialsSkipsDisabledProxyPool(t *testing.T) {
 	}
 }
 
+func TestMonitorProxyCredentialsSkipsUnauthenticatedEnabledProxyPool(t *testing.T) {
+	username, password := monitorProxyCredentials(&config.Config{
+		MultiPort: config.MultiPortConfig{Username: "multi-user", Password: "multi-pass"},
+		ProxyPools: []config.ProxyPoolConfig{
+			{
+				Name:    "public",
+				Enabled: true,
+			},
+			{
+				Name:    "authenticated",
+				Enabled: true,
+				Listener: config.ListenerConfig{
+					Username: "pool-user",
+					Password: "pool-pass",
+				},
+			},
+		},
+	})
+	if username != "pool-user" || password != "pool-pass" {
+		t.Fatalf("credentials = %q/%q, want authenticated pool credentials", username, password)
+	}
+}
+
 func jsonNumber(value int64) string {
 	return strconv.FormatInt(value, 10)
 }
