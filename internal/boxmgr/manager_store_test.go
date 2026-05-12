@@ -444,6 +444,15 @@ func TestCreateNodeRejectsManagementPortConflict(t *testing.T) {
 	}
 }
 
+func TestTriggerReloadWithoutConfigReturnsError(t *testing.T) {
+	mgr := New(nil, monitor.Config{})
+
+	err := mgr.TriggerReload(context.Background())
+	if !errors.Is(err, errConfigUnavailable) {
+		t.Fatalf("reload error = %v, want config unavailable", err)
+	}
+}
+
 func TestFirstEnabledProxyPoolSkipsDisabledPools(t *testing.T) {
 	pool := firstEnabledProxyPool([]config.ProxyPoolConfig{
 		{

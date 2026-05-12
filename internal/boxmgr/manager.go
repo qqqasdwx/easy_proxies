@@ -1193,7 +1193,10 @@ func (m *Manager) TriggerReload(ctx context.Context) error {
 
 	m.mu.RLock()
 	cfgCopy := m.copyConfigLocked()
-	portMap := m.cfg.BuildPortMap() // Preserve existing port assignments
+	var portMap map[string]uint16
+	if m.cfg != nil {
+		portMap = m.cfg.BuildPortMap() // Preserve existing port assignments
+	}
 	m.mu.RUnlock()
 
 	if cfgCopy == nil {
