@@ -226,3 +226,39 @@ func TestNormalizeWithPortMapDefaultsGeoIPPort(t *testing.T) {
 		t.Fatalf("geoip port = %d, want 1221", cfg.GeoIP.Port)
 	}
 }
+
+func TestNormalizeWithPortMapRejectsGeoIPProxyPoolPortConflict(t *testing.T) {
+	cfg := Config{
+		GeoIP: GeoIPConfig{Enabled: true, Port: 2323},
+		ProxyPools: []ProxyPoolConfig{{
+			Name:    "default",
+			Enabled: true,
+			Listener: ListenerConfig{
+				Address:  "127.0.0.1",
+				Port:     2323,
+				Protocol: InboundProtocolMixed,
+			},
+			Mode:     "sequential",
+			AllNodes: true,
+		}},
+	}
+	err := cfg.NormalizeWithPortMap(nil)
+	if err == nil || !strings.Contains(err.Error(), "geoip port 2323 conflicts") {
+		t.Fatalf("normalize error = %v, want geoip port conflict", err)
+	}
+}
+
+func TestNormalizeWithPortMapRejectsGeoIPNodePortConflict(t *testing.T) {
+	cfg := Config{
+		GeoIP: GeoIPConfig{Enabled: true, Port: 1221},
+		Nodes: []NodeConfig{{
+			Name: "node-1",
+			URI:  "http://user:pass@example.com:8080",
+			Port: 1221,
+		}},
+	}
+	err := cfg.NormalizeWithPortMap(nil)
+	if err == nil || !strings.Contains(err.Error(), "node \"node-1\" port 1221 conflicts") {
+		t.Fatalf("normalize error = %v, want node port conflict", err)
+	}
+}

@@ -189,6 +189,44 @@ func TestHandleProxyPoolsRejectsDuplicateListenPort(t *testing.T) {
 	}
 }
 
+func TestHandleProxyPoolsRejectsGeoIPPortConflict(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	server := &Server{store: st, cfgSrc: &config.Config{
+		GeoIP: config.GeoIPConfig{Enabled: true, Port: 1221},
+	}, logger: log.Default()}
+	body := bytes.NewBufferString(`{
+		"name":"geoip-conflict",
+		"enabled":true,
+		"listen_address":"127.0.0.1",
+		"listen_port":1221,
+		"protocol":"mixed",
+		"mode":"sequential",
+		"failure_threshold":3,
+		"blacklist_duration":"24h",
+		"all_nodes":true
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pools", body)
+	rec := httptest.NewRecorder()
+
+	server.handleProxyPools(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("监听端口 1221 已被 GeoIP 路由使用")) {
+		t.Fatalf("body = %s, want geoip port conflict", rec.Body.String())
+	}
+}
+
 func TestHandleProxyPoolDeleteRejectsLastPool(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {

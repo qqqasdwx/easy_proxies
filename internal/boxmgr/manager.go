@@ -1369,6 +1369,9 @@ func reassignConflictingPort(cfg *config.Config, conflictPort uint16) bool {
 			usedPorts[proxyPool.Listener.Port] = true
 		}
 	}
+	if cfg.GeoIP.Enabled && cfg.GeoIP.Port > 0 {
+		usedPorts[cfg.GeoIP.Port] = true
+	}
 	for _, node := range cfg.Nodes {
 		usedPorts[node.Port] = true
 	}
@@ -1428,6 +1431,9 @@ func (m *Manager) portInUseLocked(port uint16, currentName string) bool {
 	if port == 0 {
 		return false
 	}
+	if m.cfg.GeoIP.Enabled && m.cfg.GeoIP.Port == port {
+		return true
+	}
 	for _, proxyPool := range m.cfg.ProxyPools {
 		if proxyPool.Listener.Port == port {
 			return true
@@ -1450,6 +1456,9 @@ func (m *Manager) nextAvailablePortLocked() uint16 {
 		base = 24000
 	}
 	used := make(map[uint16]struct{}, len(m.cfg.Nodes))
+	if m.cfg.GeoIP.Enabled && m.cfg.GeoIP.Port > 0 {
+		used[m.cfg.GeoIP.Port] = struct{}{}
+	}
 	for _, proxyPool := range m.cfg.ProxyPools {
 		if proxyPool.Listener.Port > 0 {
 			used[proxyPool.Listener.Port] = struct{}{}

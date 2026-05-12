@@ -528,6 +528,12 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 			usedPorts[pool.Listener.Port] = true
 		}
 	}
+	if c.GeoIP.Enabled && c.GeoIP.Port > 0 {
+		if usedPorts[c.GeoIP.Port] {
+			return fmt.Errorf("geoip port %d conflicts with another listener", c.GeoIP.Port)
+		}
+		usedPorts[c.GeoIP.Port] = true
+	}
 
 	// First pass: assign ports from portMap for existing nodes
 	for idx := range c.Nodes {

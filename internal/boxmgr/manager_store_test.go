@@ -313,6 +313,28 @@ func TestCreateNodeRejectsProxyPoolPortConflict(t *testing.T) {
 	}
 }
 
+func TestCreateNodeRejectsGeoIPPortConflict(t *testing.T) {
+	ctx := context.Background()
+	mgr := New(&config.Config{
+		GeoIP: config.GeoIPConfig{
+			Enabled: true,
+			Port:    1221,
+		},
+	}, monitor.Config{})
+
+	_, err := mgr.CreateNode(ctx, config.NodeConfig{
+		Name: "geoip-conflict",
+		URI:  "http://user:pass@example.com:8080",
+		Port: 1221,
+	})
+	if !errors.Is(err, monitor.ErrNodeConflict) {
+		t.Fatalf("create error = %v, want node conflict", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "端口 1221 已被占用") {
+		t.Fatalf("create error = %v, want occupied port detail", err)
+	}
+}
+
 func TestFirstEnabledProxyPoolSkipsDisabledPools(t *testing.T) {
 	pool := firstEnabledProxyPool([]config.ProxyPoolConfig{
 		{
