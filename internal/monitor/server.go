@@ -796,6 +796,17 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	// GeoIP 分区路由入口
 	if geoipCfg.Enabled && geoipCfg.Port > 0 {
 		geoAddr := geoipCfg.Listen
+		if geoAddr == "" {
+			if proxyPool := firstEnabledProxyPool(proxyPools); proxyPool != nil {
+				geoAddr = proxyPool.Listener.Address
+			}
+		}
+		if geoAddr == "" {
+			geoAddr = listenerCfg.Address
+		}
+		if geoAddr == "" {
+			geoAddr = "0.0.0.0"
+		}
 		if geoAddr == "" || geoAddr == "0.0.0.0" || geoAddr == "::" {
 			if extIP, _, _, _ := s.getSettings(); extIP != "" {
 				geoAddr = extIP
