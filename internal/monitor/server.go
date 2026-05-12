@@ -1700,6 +1700,11 @@ func (s *Server) handleProxyPools(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"error": err.Error()})
 			return
 		}
+		if err := s.validateProxyPoolNodeIDs(r.Context(), pool); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
 		if err := s.store.CreateProxyPool(r.Context(), &pool); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存代理池失败: %v", err)})
@@ -1749,6 +1754,11 @@ func (s *Server) handleProxyPoolItem(w http.ResponseWriter, r *http.Request) {
 		}
 		next, err := proxyPoolFromPayload(payload, current)
 		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		if err := s.validateProxyPoolNodeIDs(r.Context(), next); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]any{"error": err.Error()})
 			return
@@ -1844,6 +1854,9 @@ func proxyPoolFromPayload(payload proxyPoolPayload, current *store.ProxyPool) (s
 		pool.AllNodes = *payload.AllNodes
 	}
 	pool.NodeIDs = cleanNodeIDs(payload.NodeIDs)
+	if pool.AllNodes {
+		pool.NodeIDs = nil
+	}
 	if !pool.AllNodes && len(pool.NodeIDs) == 0 {
 		return pool, errors.New("请选择至少一个节点，或启用全部节点")
 	}
@@ -1866,6 +1879,22 @@ func cleanNodeIDs(values []int64) []int64 {
 		out = append(out, id)
 	}
 	return out
+}
+
+func (s *Server) validateProxyPoolNodeIDs(ctx context.Context, pool store.ProxyPool) error {
+	if pool.AllNodes {
+		return nil
+	}
+	for _, nodeID := range pool.NodeIDs {
+		node, err := s.store.GetNode(ctx, nodeID)
+		if err != nil {
+			return fmt.Errorf("读取节点 %d 失败: %w", nodeID, err)
+		}
+		if node == nil {
+			return fmt.Errorf("节点 %d 不存在", nodeID)
+		}
+	}
+	return nil
 }
 
 func proxyPoolsResponse(pools []store.ProxyPool) []map[string]any {
