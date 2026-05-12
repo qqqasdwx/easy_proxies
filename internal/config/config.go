@@ -158,6 +158,51 @@ func DefaultGeoIPDatabasePath() string {
 	return filepath.Join("data", defaultGeoIPDatabaseName)
 }
 
+// NormalizeMode normalizes and validates the runtime mode.
+func NormalizeMode(value string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	if mode == "" {
+		return "pool", nil
+	}
+	if mode == "multi_port" {
+		mode = "multi-port"
+	}
+	switch mode {
+	case "pool", "multi-port", "hybrid":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unsupported mode %q (use 'pool', 'multi-port', or 'hybrid')", value)
+	}
+}
+
+// NormalizePoolMode normalizes and validates the pool scheduling mode.
+func NormalizePoolMode(value string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	if mode == "" {
+		return "sequential", nil
+	}
+	switch mode {
+	case "sequential", "random", "balance":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unsupported pool.mode %q (use 'sequential', 'random', or 'balance')", value)
+	}
+}
+
+// NormalizeLogLevel normalizes and validates the sing-box log level.
+func NormalizeLogLevel(value string) (string, error) {
+	level := strings.ToLower(strings.TrimSpace(value))
+	if level == "" {
+		return "info", nil
+	}
+	switch level {
+	case "trace", "debug", "info", "warn", "error", "fatal", "panic":
+		return level, nil
+	default:
+		return "", fmt.Errorf("unsupported log_level %q (use 'trace', 'debug', 'info', 'warn', 'error', 'fatal', or 'panic')", value)
+	}
+}
+
 // NormalizeInboundProtocol normalizes inbound protocol aliases and validates the value.
 func NormalizeInboundProtocol(value string) (string, error) {
 	protocol := strings.ToLower(strings.TrimSpace(value))
@@ -388,16 +433,10 @@ func (c *Config) BuildPortMap() map[string]uint16 {
 // NormalizeWithPortMap applies defaults and validation, preserving port assignments
 // for nodes that exist in the provided port map.
 func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
-	if c.Mode == "" {
-		c.Mode = "pool"
-	}
-	if c.Mode == "multi_port" {
-		c.Mode = "multi-port"
-	}
-	switch c.Mode {
-	case "pool", "multi-port", "hybrid":
-	default:
-		return fmt.Errorf("unsupported mode %q (use 'pool', 'multi-port', or 'hybrid')", c.Mode)
+	var err error
+	c.Mode, err = NormalizeMode(c.Mode)
+	if err != nil {
+		return err
 	}
 	if c.Listener.Address == "" {
 		c.Listener.Address = "0.0.0.0"
@@ -405,8 +444,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	if c.Listener.Port == 0 {
 		c.Listener.Port = 2323
 	}
-	if c.Pool.Mode == "" {
-		c.Pool.Mode = "sequential"
+	c.Pool.Mode, err = NormalizePoolMode(c.Pool.Mode)
+	if err != nil {
+		return err
 	}
 	if c.Pool.FailureThreshold <= 0 {
 		c.Pool.FailureThreshold = 3
@@ -525,8 +565,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		}
 	}
 
-	if c.LogLevel == "" {
-		c.LogLevel = "info"
+	c.LogLevel, err = NormalizeLogLevel(c.LogLevel)
+	if err != nil {
+		return err
 	}
 
 	c.normalizeLogConfig()

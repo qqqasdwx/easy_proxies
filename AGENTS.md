@@ -6,8 +6,8 @@ This is a Go proxy pool manager built around sing-box. The application entry poi
 
 ## Build, Test, and Development Commands
 
-- `go test ./...` runs all unit tests.
-- `go test -cover ./...` checks package-level coverage when changing shared logic.
+- `scripts/test-go.sh` runs all Go unit tests under `cmd` and `internal` without descending into `frontend/node_modules`.
+- `scripts/test-go.sh -cover` checks package-level coverage when changing shared logic.
 - `go run ./cmd/easy_proxies --database data/data.db` starts the app from source with the local SQLite store.
 - `npm --prefix frontend run lint` checks the React/TypeScript frontend.
 - `npm --prefix frontend run build` builds the frontend and refreshes embedded monitor assets.

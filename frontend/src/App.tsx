@@ -6,7 +6,7 @@ import LogsPanel from './components/LogsPanel'
 import SettingsPanel from './components/SettingsPanel'
 import SubscriptionsPanel from './components/SubscriptionsPanel'
 import LoginPage from './components/LoginPage'
-import { checkAuth, getToken, logout } from './api/client'
+import { checkAuth, logout } from './api/client'
 import packageJson from '../package.json'
 
 type AuthState = 'loading' | 'need_login' | 'authenticated'
@@ -157,17 +157,13 @@ function App() {
         const res = await checkAuth()
         if (res.no_password) {
           setAuthState('authenticated')
-        } else if (getToken()) {
+        } else if (res.message === '已登录') {
           setAuthState('authenticated')
         } else {
           setAuthState('need_login')
         }
       } catch {
-        if (getToken()) {
-          setAuthState('authenticated')
-        } else {
-          setAuthState('need_login')
-        }
+        setAuthState('need_login')
       }
     }
     doCheck()
@@ -181,7 +177,7 @@ function App() {
 
   const handleLogin = useCallback(() => setAuthState('authenticated'), [])
   const handleLogout = useCallback(() => {
-    logout()
+    void logout()
     setAuthState('need_login')
   }, [])
 

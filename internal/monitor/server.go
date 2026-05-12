@@ -48,6 +48,8 @@ var (
 	ErrNodeReadOnly = errors.New("订阅节点不支持编辑或删除")
 )
 
+const sessionCookieName = "session_token"
+
 // SubscriptionRefresher interface for subscription manager.
 type SubscriptionRefresher interface {
 	RefreshNow() error
@@ -183,51 +185,6 @@ func (s *Server) getSettings() (externalIP, probeTarget string, skipCertVerify b
 		logCfg = s.cfgSrc.Log
 	}
 	return s.cfg.ExternalIP, s.cfg.ProbeTarget, s.cfg.SkipCertVerify, logCfg
-}
-
-// updateSettings updates dynamic settings in memory. Persistence is handled by the caller.
-func (s *Server) updateSettings(externalIP, probeTarget string, skipCertVerify bool, logCfg *config.LogConfig, geoipEnabled bool) error {
-	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
-
-	s.cfg.ExternalIP = externalIP
-	s.cfg.ProbeTarget = probeTarget
-	s.cfg.SkipCertVerify = skipCertVerify
-
-	if s.cfgSrc == nil {
-		return errors.New("配置存储未初始化")
-	}
-
-	s.cfgSrc.ExternalIP = externalIP
-	s.cfgSrc.Management.ProbeTarget = probeTarget
-	s.cfgSrc.SkipCertVerify = skipCertVerify
-
-	s.cfgSrc.GeoIP.Enabled = geoipEnabled
-	if geoipEnabled {
-		s.cfgSrc.GeoIP.DatabasePath = config.DefaultGeoIPDatabasePath()
-	}
-	if s.cfgSrc.GeoIP.AutoUpdateInterval <= 0 {
-		s.cfgSrc.GeoIP.AutoUpdateInterval = 24 * time.Hour
-	}
-
-	if logCfg != nil {
-		s.cfgSrc.Log.Output = logCfg.Output
-		if strings.TrimSpace(logCfg.File) != "" {
-			s.cfgSrc.Log.File = strings.TrimSpace(logCfg.File)
-		}
-		if logCfg.MaxSize > 0 {
-			s.cfgSrc.Log.MaxSize = logCfg.MaxSize
-		}
-		if logCfg.MaxBackups > 0 {
-			s.cfgSrc.Log.MaxBackups = logCfg.MaxBackups
-		}
-		if logCfg.MaxAge > 0 {
-			s.cfgSrc.Log.MaxAge = logCfg.MaxAge
-		}
-		s.cfgSrc.Log.Compress = logCfg.Compress
-	}
-
-	return nil
 }
 
 // Start launches the HTTP server.
@@ -626,17 +583,19 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) validateSessionFromRequest(r *http.Request) bool {
-	cookie, err := r.Cookie("session_token")
-	if err == nil && s.validateSession(cookie.Value) {
-		return true
-	}
+	token := s.sessionTokenFromRequest(r)
+	return token != "" && s.validateSession(token)
+}
 
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		return false
+func (s *Server) sessionTokenFromRequest(r *http.Request) string {
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		return strings.TrimSpace(cookie.Value)
 	}
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	return s.validateSession(token)
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
 }
 
 // handleAuth 处理登录认证
@@ -654,6 +613,11 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusUnauthorized)
 		writeJSON(w, map[string]any{"error": "未授权，请先登录"})
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		s.handleLogout(w, r)
 		return
 	}
 
@@ -692,7 +656,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 	// 设置 HttpOnly Cookie
 	http.SetCookie(w, &http.Cookie{
-		Name:     "session_token",
+		Name:     sessionCookieName,
 		Value:    session.Token,
 		Path:     "/",
 		HttpOnly: true,
@@ -703,8 +667,29 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]any{
 		"message": "登录成功",
-		"token":   session.Token,
 	})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	token := s.sessionTokenFromRequest(r)
+	if token != "" && s.store != nil {
+		if err := s.store.DeleteSession(r.Context(), token); err != nil {
+			s.logger.Printf("failed to delete session: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": "退出登录失败"})
+			return
+		}
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   false,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+	writeJSON(w, map[string]any{"message": "已退出登录"})
 }
 
 // handleExport 导出所有可用代理池节点的代理 URI，每行一个。
@@ -1117,18 +1102,26 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		extIP := strings.TrimSpace(req.ExternalIP)
 		probeTarget := strings.TrimSpace(req.ProbeTarget)
 
-		var logCfg *config.LogConfig
-		if req.Log != nil {
-			logCfg = &config.LogConfig{
-				Output:     req.Log.Output,
-				File:       req.Log.File,
-				MaxSize:    req.Log.MaxSize,
-				MaxBackups: req.Log.MaxBackups,
-				MaxAge:     req.Log.MaxAge,
-				Compress:   req.Log.Compress,
+		mode := ""
+		if req.Mode != "" {
+			normalized, err := config.NormalizeMode(req.Mode)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
 			}
+			mode = normalized
 		}
-
+		logLevel := ""
+		if req.LogLevel != "" {
+			normalized, err := config.NormalizeLogLevel(req.LogLevel)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			logLevel = normalized
+		}
 		var dnsStrategy string
 		if req.DNS != nil {
 			normalized, err := config.NormalizeDNSStrategy(req.DNS.Strategy)
@@ -1160,126 +1153,183 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			multiPortProtocol = normalized
 		}
-
-		if err := s.updateSettings(extIP, probeTarget, req.SkipCertVerify, logCfg, req.GeoIP != nil && req.GeoIP.Enabled); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			writeJSON(w, map[string]any{"error": err.Error()})
-			return
-		}
-
-		// Update extended settings
-		s.cfgMu.Lock()
-		if s.cfgSrc != nil {
-			if req.Mode != "" {
-				s.cfgSrc.Mode = req.Mode
-			}
-			if req.LogLevel != "" {
-				s.cfgSrc.LogLevel = req.LogLevel
-			}
-			if req.Listener != nil {
-				s.cfgSrc.Listener.Address = req.Listener.Address
-				s.cfgSrc.Listener.Port = req.Listener.Port
-				if listenerProtocol != "" {
-					s.cfgSrc.Listener.Protocol = listenerProtocol
-				}
-				s.cfgSrc.Listener.Username = req.Listener.Username
-				s.cfgSrc.Listener.Password = req.Listener.Password
-			}
-			if req.MultiPort != nil {
-				s.cfgSrc.MultiPort.Address = req.MultiPort.Address
-				s.cfgSrc.MultiPort.BasePort = req.MultiPort.BasePort
-				if multiPortProtocol != "" {
-					s.cfgSrc.MultiPort.Protocol = multiPortProtocol
-				}
-				s.cfgSrc.MultiPort.Username = req.MultiPort.Username
-				s.cfgSrc.MultiPort.Password = req.MultiPort.Password
-			}
-			if req.Pool != nil {
-				s.cfgSrc.Pool.Mode = req.Pool.Mode
-				s.cfgSrc.Pool.FailureThreshold = req.Pool.FailureThreshold
-				if req.Pool.BlacklistDuration != "" {
-					if d, err := time.ParseDuration(req.Pool.BlacklistDuration); err == nil {
-						s.cfgSrc.Pool.BlacklistDuration = d
-					}
-				}
-			}
-			if req.DNS != nil {
-				s.cfgSrc.DNS.Enabled = req.DNS.Enabled
-				s.cfgSrc.DNS.Server = strings.TrimSpace(req.DNS.Server)
-				s.cfgSrc.DNS.FallbackServers = cleanStringList(req.DNS.FallbackServers)
-				s.cfgSrc.DNS.Port = req.DNS.Port
-				s.cfgSrc.DNS.Strategy = dnsStrategy
-			}
-			if req.Management != nil {
-				if req.Management.ProbeTarget != "" {
-					s.cfgSrc.Management.ProbeTarget = req.Management.ProbeTarget
-				}
-			}
-			if req.GeoIP != nil {
-				s.cfgSrc.GeoIP.DatabasePath = config.DefaultGeoIPDatabasePath()
-				s.cfgSrc.GeoIP.Listen = req.GeoIP.Listen
-				s.cfgSrc.GeoIP.Port = req.GeoIP.Port
-				s.cfgSrc.GeoIP.AutoUpdateEnabled = req.GeoIP.AutoUpdateEnabled
-				if req.GeoIP.AutoUpdateInterval != "" {
-					if d, err := time.ParseDuration(req.GeoIP.AutoUpdateInterval); err == nil {
-						s.cfgSrc.GeoIP.AutoUpdateInterval = d
-					}
-				}
-			}
-			if req.HealthCheck != nil {
-				interval, err := parsePositiveDuration(req.HealthCheck.Interval, "健康检查间隔")
-				if err != nil {
-					s.cfgMu.Unlock()
-					w.WriteHeader(http.StatusBadRequest)
-					writeJSON(w, map[string]any{"error": err.Error()})
-					return
-				}
-				timeout, err := parsePositiveDuration(req.HealthCheck.Timeout, "健康检查超时")
-				if err != nil {
-					s.cfgMu.Unlock()
-					w.WriteHeader(http.StatusBadRequest)
-					writeJSON(w, map[string]any{"error": err.Error()})
-					return
-				}
-				if req.HealthCheck.Concurrency <= 0 {
-					s.cfgMu.Unlock()
-					w.WriteHeader(http.StatusBadRequest)
-					writeJSON(w, map[string]any{"error": "健康检查并发数必须大于 0"})
-					return
-				}
-				s.cfgSrc.HealthCheck.Interval = interval
-				s.cfgSrc.HealthCheck.Timeout = timeout
-				s.cfgSrc.HealthCheck.Concurrency = req.HealthCheck.Concurrency
-			}
-			if err := s.cfgSrc.NormalizeWithPortMap(s.cfgSrc.BuildPortMap()); err != nil {
-				s.cfgMu.Unlock()
+		poolMode := ""
+		var blacklistDuration time.Duration
+		if req.Pool != nil {
+			normalized, err := config.NormalizePoolMode(req.Pool.Mode)
+			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				writeJSON(w, map[string]any{"error": err.Error()})
 				return
 			}
-			if req.Log != nil {
-				if err := logging.Configure(s.cfgSrc.Log, LogWriter()); err != nil {
-					s.cfgMu.Unlock()
+			poolMode = normalized
+			if req.Pool.BlacklistDuration != "" {
+				d, err := parsePositiveDuration(req.Pool.BlacklistDuration, "黑名单持续时间")
+				if err != nil {
 					w.WriteHeader(http.StatusBadRequest)
-					writeJSON(w, map[string]any{"error": fmt.Sprintf("应用日志配置失败: %v", err)})
+					writeJSON(w, map[string]any{"error": err.Error()})
 					return
 				}
+				blacklistDuration = d
 			}
-			if req.HealthCheck != nil && s.mgr != nil {
-				s.mgr.StartPeriodicHealthCheck(
-					s.cfgSrc.HealthCheck.Interval,
-					s.cfgSrc.HealthCheck.Timeout,
-					s.cfgSrc.HealthCheck.Concurrency,
-				)
+		}
+		var geoIPAutoUpdateInterval time.Duration
+		if req.GeoIP != nil && req.GeoIP.AutoUpdateInterval != "" {
+			d, err := parsePositiveDuration(req.GeoIP.AutoUpdateInterval, "GeoIP 自动更新间隔")
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
 			}
-			if s.store != nil {
-				if err := config.SaveRuntime(r.Context(), s.store, s.cfgSrc); err != nil {
-					s.cfgMu.Unlock()
-					w.WriteHeader(http.StatusInternalServerError)
-					writeJSON(w, map[string]any{"error": fmt.Sprintf("保存配置失败: %v", err)})
-					return
-				}
+			geoIPAutoUpdateInterval = d
+		}
+		var healthInterval, healthTimeout time.Duration
+		if req.HealthCheck != nil {
+			interval, err := parsePositiveDuration(req.HealthCheck.Interval, "健康检查间隔")
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
 			}
+			timeout, err := parsePositiveDuration(req.HealthCheck.Timeout, "健康检查超时")
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			if req.HealthCheck.Concurrency <= 0 {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": "健康检查并发数必须大于 0"})
+				return
+			}
+			healthInterval = interval
+			healthTimeout = timeout
+		}
+
+		s.cfgMu.Lock()
+		if s.cfgSrc == nil {
+			s.cfgMu.Unlock()
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": "配置存储未初始化"})
+			return
+		}
+		next := *s.cfgSrc
+		next.ExternalIP = extIP
+		next.Management.ProbeTarget = probeTarget
+		next.SkipCertVerify = req.SkipCertVerify
+		next.GeoIP.Enabled = req.GeoIP != nil && req.GeoIP.Enabled
+		if next.GeoIP.Enabled {
+			next.GeoIP.DatabasePath = config.DefaultGeoIPDatabasePath()
+		}
+		if next.GeoIP.AutoUpdateInterval <= 0 {
+			next.GeoIP.AutoUpdateInterval = 24 * time.Hour
+		}
+		if mode != "" {
+			next.Mode = mode
+		}
+		if logLevel != "" {
+			next.LogLevel = logLevel
+		}
+		if req.Log != nil {
+			next.Log.Output = req.Log.Output
+			if strings.TrimSpace(req.Log.File) != "" {
+				next.Log.File = strings.TrimSpace(req.Log.File)
+			}
+			if req.Log.MaxSize > 0 {
+				next.Log.MaxSize = req.Log.MaxSize
+			}
+			if req.Log.MaxBackups > 0 {
+				next.Log.MaxBackups = req.Log.MaxBackups
+			}
+			if req.Log.MaxAge > 0 {
+				next.Log.MaxAge = req.Log.MaxAge
+			}
+			next.Log.Compress = req.Log.Compress
+		}
+		if req.Listener != nil {
+			next.Listener.Address = req.Listener.Address
+			next.Listener.Port = req.Listener.Port
+			if listenerProtocol != "" {
+				next.Listener.Protocol = listenerProtocol
+			}
+			next.Listener.Username = req.Listener.Username
+			next.Listener.Password = req.Listener.Password
+		}
+		if req.MultiPort != nil {
+			next.MultiPort.Address = req.MultiPort.Address
+			next.MultiPort.BasePort = req.MultiPort.BasePort
+			if multiPortProtocol != "" {
+				next.MultiPort.Protocol = multiPortProtocol
+			}
+			next.MultiPort.Username = req.MultiPort.Username
+			next.MultiPort.Password = req.MultiPort.Password
+		}
+		if req.Pool != nil {
+			next.Pool.Mode = poolMode
+			next.Pool.FailureThreshold = req.Pool.FailureThreshold
+			if blacklistDuration > 0 {
+				next.Pool.BlacklistDuration = blacklistDuration
+			}
+		}
+		if req.DNS != nil {
+			next.DNS.Enabled = req.DNS.Enabled
+			next.DNS.Server = strings.TrimSpace(req.DNS.Server)
+			next.DNS.FallbackServers = cleanStringList(req.DNS.FallbackServers)
+			next.DNS.Port = req.DNS.Port
+			next.DNS.Strategy = dnsStrategy
+		}
+		if req.Management != nil && req.Management.ProbeTarget != "" {
+			next.Management.ProbeTarget = req.Management.ProbeTarget
+		}
+		if req.GeoIP != nil {
+			next.GeoIP.DatabasePath = config.DefaultGeoIPDatabasePath()
+			next.GeoIP.Listen = req.GeoIP.Listen
+			next.GeoIP.Port = req.GeoIP.Port
+			next.GeoIP.AutoUpdateEnabled = req.GeoIP.AutoUpdateEnabled
+			if geoIPAutoUpdateInterval > 0 {
+				next.GeoIP.AutoUpdateInterval = geoIPAutoUpdateInterval
+			}
+		}
+		if req.HealthCheck != nil {
+			next.HealthCheck.Interval = healthInterval
+			next.HealthCheck.Timeout = healthTimeout
+			next.HealthCheck.Concurrency = req.HealthCheck.Concurrency
+		}
+		if err := next.NormalizeWithPortMap(next.BuildPortMap()); err != nil {
+			s.cfgMu.Unlock()
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		if req.Log != nil {
+			if err := logging.Configure(next.Log, LogWriter()); err != nil {
+				s.cfgMu.Unlock()
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": fmt.Sprintf("应用日志配置失败: %v", err)})
+				return
+			}
+		}
+		if s.store != nil {
+			if err := config.SaveRuntime(r.Context(), s.store, &next); err != nil {
+				s.cfgMu.Unlock()
+				w.WriteHeader(http.StatusInternalServerError)
+				writeJSON(w, map[string]any{"error": fmt.Sprintf("保存配置失败: %v", err)})
+				return
+			}
+		}
+		*s.cfgSrc = next
+		s.cfg.ExternalIP = next.ExternalIP
+		s.cfg.ProbeTarget = next.Management.ProbeTarget
+		s.cfg.SkipCertVerify = next.SkipCertVerify
+		if next.Mode == "multi-port" || next.Mode == "hybrid" {
+			s.cfg.ProxyUsername = next.MultiPort.Username
+			s.cfg.ProxyPassword = next.MultiPort.Password
+		} else {
+			s.cfg.ProxyUsername = next.Listener.Username
+			s.cfg.ProxyPassword = next.Listener.Password
+		}
+		if req.HealthCheck != nil && s.mgr != nil {
+			s.mgr.StartPeriodicHealthCheck(next.HealthCheck.Interval, next.HealthCheck.Timeout, next.HealthCheck.Concurrency)
 		}
 		s.cfgMu.Unlock()
 
