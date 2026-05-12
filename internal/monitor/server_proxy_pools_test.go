@@ -222,6 +222,32 @@ func TestHandleProxyPoolDeleteRejectsLastPool(t *testing.T) {
 	}
 }
 
+func TestMonitorProxyCredentialsSkipsDisabledProxyPool(t *testing.T) {
+	username, password := monitorProxyCredentials(&config.Config{
+		ProxyPools: []config.ProxyPoolConfig{
+			{
+				Name:    "disabled",
+				Enabled: false,
+				Listener: config.ListenerConfig{
+					Username: "disabled-user",
+					Password: "disabled-pass",
+				},
+			},
+			{
+				Name:    "enabled",
+				Enabled: true,
+				Listener: config.ListenerConfig{
+					Username: "enabled-user",
+					Password: "enabled-pass",
+				},
+			},
+		},
+	})
+	if username != "enabled-user" || password != "enabled-pass" {
+		t.Fatalf("credentials = %q/%q, want enabled pool credentials", username, password)
+	}
+}
+
 func jsonNumber(value int64) string {
 	return strconv.FormatInt(value, 10)
 }

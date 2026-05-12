@@ -571,17 +571,17 @@ func (m *Manager) startGeoIPRouter(ctx context.Context, cfg *config.Config) {
 	}
 	geoipListen := cfg.GeoIP.Listen
 	if geoipListen == "" {
-		if len(cfg.ProxyPools) > 0 {
-			geoipListen = cfg.ProxyPools[0].Listener.Address
+		if proxyPool := firstEnabledProxyPool(cfg.ProxyPools); proxyPool != nil {
+			geoipListen = proxyPool.Listener.Address
 		} else {
 			geoipListen = cfg.Listener.Address
 		}
 	}
 
 	username, password := "", ""
-	if len(cfg.ProxyPools) > 0 {
-		username = cfg.ProxyPools[0].Listener.Username
-		password = cfg.ProxyPools[0].Listener.Password
+	if proxyPool := firstEnabledProxyPool(cfg.ProxyPools); proxyPool != nil {
+		username = proxyPool.Listener.Username
+		password = proxyPool.Listener.Password
 	}
 	routerCfg := geoip.RouterConfig{
 		Listen:   geoipListen,
@@ -622,6 +622,15 @@ func (m *Manager) startGeoIPRouter(ctx context.Context, cfg *config.Config) {
 	m.mu.Lock()
 	m.geoRouter = router
 	m.mu.Unlock()
+}
+
+func firstEnabledProxyPool(pools []config.ProxyPoolConfig) *config.ProxyPoolConfig {
+	for idx := range pools {
+		if pools[idx].Enabled {
+			return &pools[idx]
+		}
+	}
+	return nil
 }
 
 // createBox builds a sing-box instance from config.

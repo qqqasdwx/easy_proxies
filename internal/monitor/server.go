@@ -175,15 +175,22 @@ func monitorProxyCredentials(cfg *config.Config) (string, string) {
 	if cfg == nil {
 		return "", ""
 	}
-	for _, proxyPool := range cfg.ProxyPools {
-		if proxyPool.Enabled && proxyPool.Listener.Username != "" {
-			return proxyPool.Listener.Username, proxyPool.Listener.Password
-		}
+	if proxyPool := firstEnabledProxyPool(cfg.ProxyPools); proxyPool != nil && proxyPool.Listener.Username != "" {
+		return proxyPool.Listener.Username, proxyPool.Listener.Password
 	}
 	if cfg.MultiPort.Username != "" {
 		return cfg.MultiPort.Username, cfg.MultiPort.Password
 	}
 	return cfg.Listener.Username, cfg.Listener.Password
+}
+
+func firstEnabledProxyPool(pools []config.ProxyPoolConfig) *config.ProxyPoolConfig {
+	for idx := range pools {
+		if pools[idx].Enabled {
+			return &pools[idx]
+		}
+	}
+	return nil
 }
 
 // getSettings returns current dynamic settings (thread-safe).
@@ -777,8 +784,8 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var geoAuth string
-		if len(proxyPools) > 0 && proxyPools[0].Listener.Username != "" {
-			geoAuth = fmt.Sprintf("%s:%s@", proxyPools[0].Listener.Username, proxyPools[0].Listener.Password)
+		if proxyPool := firstEnabledProxyPool(proxyPools); proxyPool != nil && proxyPool.Listener.Username != "" {
+			geoAuth = fmt.Sprintf("%s:%s@", proxyPool.Listener.Username, proxyPool.Listener.Password)
 		}
 		regions := geoip.AllRegions()
 		var pathParts []string

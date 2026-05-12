@@ -272,6 +272,34 @@ func TestCreateNodeRejectsProxyPoolPortConflict(t *testing.T) {
 	}
 }
 
+func TestFirstEnabledProxyPoolSkipsDisabledPools(t *testing.T) {
+	pool := firstEnabledProxyPool([]config.ProxyPoolConfig{
+		{
+			ID:      1,
+			Name:    "disabled",
+			Enabled: false,
+			Listener: config.ListenerConfig{
+				Address:  "127.0.0.1",
+				Port:     2323,
+				Username: "disabled-user",
+			},
+		},
+		{
+			ID:      2,
+			Name:    "enabled",
+			Enabled: true,
+			Listener: config.ListenerConfig{
+				Address:  "127.0.0.2",
+				Port:     2324,
+				Username: "enabled-user",
+			},
+		},
+	})
+	if pool == nil || pool.ID != 2 || pool.Listener.Username != "enabled-user" {
+		t.Fatalf("first enabled pool = %+v, want pool 2", pool)
+	}
+}
+
 func TestApplyStoreNodeStateAddsEnabledStoreNodes(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
