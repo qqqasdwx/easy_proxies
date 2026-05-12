@@ -1705,6 +1705,11 @@ func (s *Server) handleProxyPools(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"error": err.Error()})
 			return
 		}
+		if err := s.validateProxyPoolListenPort(r.Context(), pool); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
 		if err := s.store.CreateProxyPool(r.Context(), &pool); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存代理池失败: %v", err)})
@@ -1759,6 +1764,11 @@ func (s *Server) handleProxyPoolItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.validateProxyPoolNodeIDs(r.Context(), next); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		if err := s.validateProxyPoolListenPort(r.Context(), next); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]any{"error": err.Error()})
 			return
@@ -1914,6 +1924,28 @@ func (s *Server) validateProxyPoolNodeIDs(ctx context.Context, pool store.ProxyP
 		}
 		if node == nil {
 			return fmt.Errorf("节点 %d 不存在", nodeID)
+		}
+	}
+	return nil
+}
+
+func (s *Server) validateProxyPoolListenPort(ctx context.Context, pool store.ProxyPool) error {
+	pools, err := s.store.ListProxyPools(ctx)
+	if err != nil {
+		return fmt.Errorf("读取代理池失败: %w", err)
+	}
+	for _, existing := range pools {
+		if existing.ID != pool.ID && existing.ListenPort == pool.ListenPort {
+			return fmt.Errorf("监听端口 %d 已被代理池 %q 使用", pool.ListenPort, existing.Name)
+		}
+	}
+	nodes, err := s.store.ListNodes(ctx, store.NodeFilter{})
+	if err != nil {
+		return fmt.Errorf("读取节点失败: %w", err)
+	}
+	for _, node := range nodes {
+		if node.Port == pool.ListenPort {
+			return fmt.Errorf("监听端口 %d 已被节点 %q 使用", pool.ListenPort, node.Name)
 		}
 	}
 	return nil

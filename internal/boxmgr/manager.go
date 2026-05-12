@@ -1418,6 +1418,11 @@ func (m *Manager) portInUseLocked(port uint16, currentName string) bool {
 	if port == 0 {
 		return false
 	}
+	for _, proxyPool := range m.cfg.ProxyPools {
+		if proxyPool.Listener.Port == port {
+			return true
+		}
+	}
 	for _, node := range m.cfg.Nodes {
 		if node.Name == currentName {
 			continue
@@ -1435,6 +1440,11 @@ func (m *Manager) nextAvailablePortLocked() uint16 {
 		base = 24000
 	}
 	used := make(map[uint16]struct{}, len(m.cfg.Nodes))
+	for _, proxyPool := range m.cfg.ProxyPools {
+		if proxyPool.Listener.Port > 0 {
+			used[proxyPool.Listener.Port] = struct{}{}
+		}
+	}
 	for _, node := range m.cfg.Nodes {
 		if node.Port > 0 {
 			used[node.Port] = struct{}{}

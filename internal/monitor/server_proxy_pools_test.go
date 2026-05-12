@@ -106,6 +106,89 @@ func TestHandleProxyPoolsPersistsKnownNodeIDs(t *testing.T) {
 	}
 }
 
+func TestHandleProxyPoolsRejectsNodePortConflict(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	node := &store.Node{
+		URI:     "http://user:pass@port.example.com:8080",
+		Name:    "node-port",
+		Source:  store.NodeSourceManual,
+		Port:    24000,
+		Enabled: true,
+	}
+	if err := st.CreateNode(t.Context(), node); err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+
+	server := &Server{store: st, cfgSrc: &config.Config{}, logger: log.Default()}
+	body := bytes.NewBufferString(`{
+		"name":"port-conflict",
+		"enabled":true,
+		"listen_address":"127.0.0.1",
+		"listen_port":24000,
+		"protocol":"mixed",
+		"mode":"sequential",
+		"failure_threshold":3,
+		"blacklist_duration":"24h",
+		"all_nodes":true
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pools", body)
+	rec := httptest.NewRecorder()
+
+	server.handleProxyPools(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("监听端口 24000 已被节点")) {
+		t.Fatalf("body = %s, want node port conflict", rec.Body.String())
+	}
+}
+
+func TestHandleProxyPoolsRejectsDuplicateListenPort(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	server := &Server{store: st, cfgSrc: &config.Config{}, logger: log.Default()}
+	body := bytes.NewBufferString(`{
+		"name":"duplicate",
+		"enabled":true,
+		"listen_address":"127.0.0.1",
+		"listen_port":2323,
+		"protocol":"mixed",
+		"mode":"sequential",
+		"failure_threshold":3,
+		"blacklist_duration":"24h",
+		"all_nodes":true
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pools", body)
+	rec := httptest.NewRecorder()
+
+	server.handleProxyPools(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("监听端口 2323 已被代理池")) {
+		t.Fatalf("body = %s, want proxy pool port conflict", rec.Body.String())
+	}
+}
+
 func TestHandleProxyPoolDeleteRejectsLastPool(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {

@@ -243,6 +243,35 @@ func TestCreateJSONOnlyNodePersistsStructuredFields(t *testing.T) {
 	}
 }
 
+func TestCreateNodeRejectsProxyPoolPortConflict(t *testing.T) {
+	ctx := context.Background()
+	mgr := New(&config.Config{
+		ProxyPools: []config.ProxyPoolConfig{{
+			Name:    "default",
+			Enabled: true,
+			Listener: config.ListenerConfig{
+				Address:  "127.0.0.1",
+				Port:     2323,
+				Protocol: config.InboundProtocolMixed,
+			},
+			Mode:     "sequential",
+			AllNodes: true,
+		}},
+	}, monitor.Config{})
+
+	_, err := mgr.CreateNode(ctx, config.NodeConfig{
+		Name: "conflict",
+		URI:  "http://user:pass@example.com:8080",
+		Port: 2323,
+	})
+	if !errors.Is(err, monitor.ErrNodeConflict) {
+		t.Fatalf("create error = %v, want node conflict", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "端口 2323 已被占用") {
+		t.Fatalf("create error = %v, want occupied port detail", err)
+	}
+}
+
 func TestApplyStoreNodeStateAddsEnabledStoreNodes(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
