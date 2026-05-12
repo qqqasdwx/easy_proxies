@@ -112,6 +112,47 @@ func TestSetNodeEnabledPersistsManualSource(t *testing.T) {
 	}
 }
 
+func TestListConfigNodesHydratesStoreNodeID(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	storeNode := &store.Node{
+		URI:     "http://user:pass@hydrated.example.com:8080",
+		Name:    "hydrated",
+		Source:  store.NodeSourceManual,
+		Enabled: true,
+	}
+	if err := st.CreateNode(ctx, storeNode); err != nil {
+		t.Fatalf("create store node: %v", err)
+	}
+
+	mgr := New(&config.Config{Nodes: []config.NodeConfig{{
+		Name: "hydrated",
+		URI:  storeNode.URI,
+	}}}, monitor.Config{}, WithStore(st))
+	nodes, err := mgr.ListConfigNodes(ctx)
+	if err != nil {
+		t.Fatalf("list config nodes: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("nodes = %+v, want one node", nodes)
+	}
+	if nodes[0].ID != storeNode.ID {
+		t.Fatalf("node ID = %d, want store ID %d", nodes[0].ID, storeNode.ID)
+	}
+	if nodes[0].Source != config.NodeSourceManual {
+		t.Fatalf("node source = %q, want manual", nodes[0].Source)
+	}
+}
+
 func TestDeleteNodeRemovesStoreOnlyNode(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
@@ -329,6 +370,49 @@ func TestApplyStoreNodeStateAddsEnabledStoreNodes(t *testing.T) {
 	}
 	if len(cfg.Nodes) != 1 || cfg.Nodes[0].Name != "store-node" {
 		t.Fatalf("cfg nodes = %+v, want store node", cfg.Nodes)
+	}
+}
+
+func TestApplyStoreNodeStateHydratesExistingNodeID(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	storeNode := &store.Node{
+		URI:            "http://user:pass@subscription.example.com:8080",
+		Name:           "subscription-node",
+		Source:         store.NodeSourceSubscription,
+		SubscriptionID: 7,
+		Enabled:        true,
+	}
+	if err := st.CreateNode(ctx, storeNode); err != nil {
+		t.Fatalf("create store node: %v", err)
+	}
+
+	cfg := &config.Config{Nodes: []config.NodeConfig{{
+		Name:   "subscription-node",
+		URI:    storeNode.URI,
+		Source: config.NodeSourceSubscription,
+	}}}
+	mgr := New(cfg, monitor.Config{}, WithStore(st))
+	if err := mgr.applyStoreNodeState(ctx, cfg); err != nil {
+		t.Fatalf("apply store node state: %v", err)
+	}
+	if len(cfg.Nodes) != 1 {
+		t.Fatalf("cfg nodes = %+v, want one node", cfg.Nodes)
+	}
+	if cfg.Nodes[0].ID != storeNode.ID {
+		t.Fatalf("node ID = %d, want store ID %d", cfg.Nodes[0].ID, storeNode.ID)
+	}
+	if cfg.Nodes[0].Source != config.NodeSourceSubscription {
+		t.Fatalf("node source = %q, want subscription", cfg.Nodes[0].Source)
 	}
 }
 

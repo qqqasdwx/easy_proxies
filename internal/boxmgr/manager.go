@@ -965,10 +965,7 @@ func (m *Manager) ListConfigNodes(ctx context.Context) ([]config.NodeConfig, err
 	for _, node := range m.cfg.Nodes {
 		out := node
 		if storeNode, ok := storeByURI[node.URI]; ok {
-			out.Disabled = !storeNode.Enabled
-			out.InboundProtocol = storeNode.InboundProtocol
-			out.OutboundJSON = storeNode.OutboundJSON
-			out.Source = config.NodeSource(storeNode.Source)
+			out = m.storeNodeToConfig(storeNode)
 		}
 		result = append(result, out)
 		seen[node.URI] = struct{}{}
@@ -1249,7 +1246,11 @@ func (m *Manager) applyStoreNodeState(ctx context.Context, cfg *config.Config) e
 	filtered := cfg.Nodes[:0]
 	for _, node := range cfg.Nodes {
 		seen[node.URI] = struct{}{}
-		if storeNode, ok := storeByURI[node.URI]; ok && !storeNode.Enabled {
+		if storeNode, ok := storeByURI[node.URI]; ok {
+			if !storeNode.Enabled {
+				continue
+			}
+			filtered = append(filtered, m.storeNodeToConfig(storeNode))
 			continue
 		}
 		filtered = append(filtered, node)
