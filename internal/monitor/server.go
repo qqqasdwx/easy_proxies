@@ -186,6 +186,20 @@ func monitorProxyCredentials(cfg *config.Config) (string, string) {
 	return cfg.Listener.Username, cfg.Listener.Password
 }
 
+func cloneRuntimeConfig(cfg *config.Config) config.Config {
+	if cfg == nil {
+		return config.Config{}
+	}
+	cloned := *cfg
+	cloned.Nodes = append([]config.NodeConfig(nil), cfg.Nodes...)
+	cloned.ProxyPools = append([]config.ProxyPoolConfig(nil), cfg.ProxyPools...)
+	for idx := range cloned.ProxyPools {
+		cloned.ProxyPools[idx].NodeIDs = append([]int64(nil), cfg.ProxyPools[idx].NodeIDs...)
+	}
+	cloned.DNS.FallbackServers = append([]string(nil), cfg.DNS.FallbackServers...)
+	return cloned
+}
+
 func firstEnabledProxyPool(pools []config.ProxyPoolConfig) *config.ProxyPoolConfig {
 	for idx := range pools {
 		if pools[idx].Enabled {
@@ -1176,7 +1190,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"error": "配置存储未初始化"})
 			return
 		}
-		next := *s.cfgSrc
+		next := cloneRuntimeConfig(s.cfgSrc)
 		next.ExternalIP = extIP
 		next.Management.ProbeTarget = probeTarget
 		next.SkipCertVerify = req.SkipCertVerify
