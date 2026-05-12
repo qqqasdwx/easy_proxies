@@ -44,6 +44,8 @@ http://localhost:9091
 MANAGEMENT_PORT=19091 MANAGEMENT_PASSWORD='change-me' docker compose up -d
 ```
 
+默认 `docker-compose.yml` 只把 WebUI/API 绑定到宿主机 `127.0.0.1`，避免空密码部署时暴露到外部网络。需要远程访问时，请先设置 `MANAGEMENT_PASSWORD`，再按部署环境显式调整端口发布或反向代理。
+
 ### 从源码运行
 
 ```bash
@@ -71,7 +73,7 @@ volumes:
 | 变量 | 说明 |
 | --- | --- |
 | `MANAGEMENT_PORT` | 进程启动时覆盖 WebUI/API 管理端口 |
-| `MANAGEMENT_PASSWORD` | 启用 WebUI/API 登录密码；不会写入数据库、API 响应、前端表单或日志 |
+| `MANAGEMENT_PASSWORD` | 启用 WebUI/API 登录密码；不会写入数据库、API 响应、前端表单或日志。对外暴露管理端时必须设置 |
 
 更多说明见 [SQLite Runtime Store](docs/sqlite-migration.md)。
 

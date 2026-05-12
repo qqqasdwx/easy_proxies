@@ -17,21 +17,17 @@ import type {
   TrafficStreamEvent,
 } from '../types'
 
-// ---- Token management ----
+// ---- Legacy token cleanup ----
 
-let authToken: string | null = localStorage.getItem('auth_token')
+localStorage.removeItem('auth_token')
 
 export function getToken(): string | null {
-  return authToken
+  return null
 }
 
 export function setToken(token: string | null) {
-  authToken = token
-  if (token) {
-    localStorage.setItem('auth_token', token)
-  } else {
-    localStorage.removeItem('auth_token')
-  }
+  void token
+  localStorage.removeItem('auth_token')
 }
 
 export function clearToken() {
@@ -43,11 +39,6 @@ export function clearToken() {
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string> || {}),
-  }
-
-  // Add auth header if we have a token
-  if (authToken) {
-    headers['Authorization'] = `Bearer ${authToken}`
   }
 
   // Set JSON content type for non-GET requests with body
@@ -172,13 +163,18 @@ export async function login(password: string): Promise<AuthResponse> {
   }
 
   const data: AuthResponse = await res.json()
-  if (data.token) {
-    setToken(data.token)
-  }
   return data
 }
 
-export function logout() {
+export async function logout() {
+  try {
+    await fetch('/api/auth', {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+  } catch {
+    // Local logout should still proceed if the network request fails.
+  }
   clearToken()
 }
 
@@ -205,14 +201,8 @@ export function probeAllNodes(
 
   const doFetch = async () => {
     try {
-      const headers: Record<string, string> = {}
-      if (authToken) {
-        headers['Authorization'] = `Bearer ${authToken}`
-      }
-
       const res = await fetch('/api/nodes/probe-all', {
         method: 'POST',
-        headers,
         credentials: 'include',
         signal: controller.signal,
       })
@@ -267,14 +257,8 @@ export function streamTraffic(
 
   const doFetch = async () => {
     try {
-      const headers: Record<string, string> = {}
-      if (authToken) {
-        headers['Authorization'] = `Bearer ${authToken}`
-      }
-
       const res = await fetch('/api/nodes/traffic/stream', {
         method: 'GET',
-        headers,
         credentials: 'include',
         signal: controller.signal,
       })
@@ -549,12 +533,7 @@ export async function updateSubscriptionRefreshSettings(settings: SubscriptionRe
 // ---- Export API ----
 
 export async function exportProxies(): Promise<string> {
-  const headers: Record<string, string> = {}
-  if (authToken) {
-    headers['Authorization'] = `Bearer ${authToken}`
-  }
   const res = await fetch('/api/export', {
-    headers,
     credentials: 'include',
   })
   if (!res.ok) throw new ApiError('导出失败', res.status)

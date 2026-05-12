@@ -8,10 +8,13 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"easy_proxies/internal/config"
+	"easy_proxies/internal/store"
 )
 
 type fakeNodeManager struct {
@@ -203,5 +206,56 @@ func TestRespondNodeErrorStillHandlesWrappedSentinels(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleAuthLogoutDeletesSessionAndClearsCookie(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	server := &Server{
+		cfg:        Config{Password: "secret"},
+		store:      st,
+		logger:     log.Default(),
+		sessionTTL: time.Hour,
+	}
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth", bytes.NewBufferString(`{"password":"secret"}`))
+	loginRec := httptest.NewRecorder()
+	server.handleAuth(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", loginRec.Code, loginRec.Body.String())
+	}
+	if strings.Contains(loginRec.Body.String(), "token") {
+		t.Fatalf("login response exposed session token: %s", loginRec.Body.String())
+	}
+	cookies := loginRec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != sessionCookieName || !cookies[0].HttpOnly {
+		t.Fatalf("unexpected login cookies: %+v", cookies)
+	}
+	token := cookies[0].Value
+	if sess, err := st.GetSession(context.Background(), token); err != nil || sess == nil {
+		t.Fatalf("session was not stored: session=%+v err=%v", sess, err)
+	}
+
+	logoutReq := httptest.NewRequest(http.MethodDelete, "/api/auth", nil)
+	logoutReq.AddCookie(cookies[0])
+	logoutRec := httptest.NewRecorder()
+	server.handleAuth(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout status = %d, body = %s", logoutRec.Code, logoutRec.Body.String())
+	}
+	if sess, err := st.GetSession(context.Background(), token); err != nil || sess != nil {
+		t.Fatalf("session was not deleted: session=%+v err=%v", sess, err)
+	}
+	cleared := logoutRec.Result().Cookies()
+	if len(cleared) != 1 || cleared[0].Name != sessionCookieName || cleared[0].MaxAge >= 0 {
+		t.Fatalf("logout did not clear cookie: %+v", cleared)
 	}
 }

@@ -7,7 +7,7 @@ services:
       MANAGEMENT_PORT: ${MANAGEMENT_PORT:-9091}
       MANAGEMENT_PASSWORD: ${MANAGEMENT_PASSWORD:-}
     ports:
-      - "${MANAGEMENT_PORT:-9091}:${MANAGEMENT_PORT:-9091}"
+      - "127.0.0.1:${MANAGEMENT_PORT:-9091}:${MANAGEMENT_PORT:-9091}"
       # Enable these only after configuring proxy listeners from the WebUI.
       # - "2323:2323"
       # - "24000-24200:24000-24200"

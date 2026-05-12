@@ -48,6 +48,8 @@ var (
 	ErrNodeReadOnly = errors.New("订阅节点不支持编辑或删除")
 )
 
+const sessionCookieName = "session_token"
+
 // SubscriptionRefresher interface for subscription manager.
 type SubscriptionRefresher interface {
 	RefreshNow() error
@@ -626,17 +628,19 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) validateSessionFromRequest(r *http.Request) bool {
-	cookie, err := r.Cookie("session_token")
-	if err == nil && s.validateSession(cookie.Value) {
-		return true
-	}
+	token := s.sessionTokenFromRequest(r)
+	return token != "" && s.validateSession(token)
+}
 
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		return false
+func (s *Server) sessionTokenFromRequest(r *http.Request) string {
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		return strings.TrimSpace(cookie.Value)
 	}
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	return s.validateSession(token)
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
 }
 
 // handleAuth 处理登录认证
@@ -654,6 +658,11 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusUnauthorized)
 		writeJSON(w, map[string]any{"error": "未授权，请先登录"})
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		s.handleLogout(w, r)
 		return
 	}
 
@@ -692,7 +701,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 	// 设置 HttpOnly Cookie
 	http.SetCookie(w, &http.Cookie{
-		Name:     "session_token",
+		Name:     sessionCookieName,
 		Value:    session.Token,
 		Path:     "/",
 		HttpOnly: true,
@@ -703,8 +712,29 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]any{
 		"message": "登录成功",
-		"token":   session.Token,
 	})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	token := s.sessionTokenFromRequest(r)
+	if token != "" && s.store != nil {
+		if err := s.store.DeleteSession(r.Context(), token); err != nil {
+			s.logger.Printf("failed to delete session: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": "退出登录失败"})
+			return
+		}
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   false,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+	writeJSON(w, map[string]any{"message": "已退出登录"})
 }
 
 // handleExport 导出所有可用代理池节点的代理 URI，每行一个。
