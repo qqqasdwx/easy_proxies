@@ -127,7 +127,7 @@ curl -x http://user:pass@localhost:1221/us/ http://example.com
 ## 开发与验证
 
 ```bash
-go test ./...
+scripts/test-go.sh
 npm ci --prefix frontend
 npm --prefix frontend run lint
 npm --prefix frontend run build
