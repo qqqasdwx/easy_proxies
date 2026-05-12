@@ -1042,9 +1042,14 @@ func (m *Manager) CreateNode(ctx context.Context, node config.NodeConfig) (confi
 	normalized.Source = config.NodeSourceManual
 
 	m.cfg.Nodes = append(m.cfg.Nodes, normalized)
-	if err := m.upsertStoreNode(ctx, normalized); err != nil {
+	storeNode, err := m.upsertStoreNode(ctx, normalized)
+	if err != nil {
 		m.cfg.Nodes = m.cfg.Nodes[:len(m.cfg.Nodes)-1]
 		return config.NodeConfig{}, fmt.Errorf("save store node: %w", err)
+	}
+	if storeNode != nil {
+		normalized.ID = storeNode.ID
+		m.cfg.Nodes[len(m.cfg.Nodes)-1].ID = storeNode.ID
 	}
 	return normalized, nil
 }
@@ -1083,9 +1088,14 @@ func (m *Manager) UpdateNode(ctx context.Context, name string, node config.NodeC
 
 	prev := m.cfg.Nodes[idx]
 	m.cfg.Nodes[idx] = normalized
-	if err := m.upsertStoreNode(ctx, normalized); err != nil {
+	storeNode, err := m.upsertStoreNode(ctx, normalized)
+	if err != nil {
 		m.cfg.Nodes[idx] = prev
 		return config.NodeConfig{}, fmt.Errorf("save store node: %w", err)
+	}
+	if storeNode != nil {
+		normalized.ID = storeNode.ID
+		m.cfg.Nodes[idx].ID = storeNode.ID
 	}
 	return normalized, nil
 }
@@ -1268,24 +1278,24 @@ func (m *Manager) applyStoreNodeState(ctx context.Context, cfg *config.Config) e
 	return nil
 }
 
-func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) error {
+func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) (*store.Node, error) {
 	if m.store == nil {
-		return nil
+		return nil, nil
 	}
 	ctx = storeContext(ctx)
 
 	storeNode, err := m.store.GetNodeByURI(ctx, node.URI)
 	if err != nil {
-		return fmt.Errorf("lookup store node: %w", err)
+		return nil, fmt.Errorf("lookup store node: %w", err)
 	}
 	if storeNode == nil && node.Name != "" {
 		storeNode, err = m.store.GetNodeByName(ctx, node.Name)
 		if err != nil {
-			return fmt.Errorf("lookup store node by name: %w", err)
+			return nil, fmt.Errorf("lookup store node by name: %w", err)
 		}
 	}
 	if storeNode == nil {
-		return m.store.CreateNode(ctx, &store.Node{
+		storeNode = &store.Node{
 			URI:             node.URI,
 			Name:            node.Name,
 			Source:          string(node.Source),
@@ -1295,7 +1305,11 @@ func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) e
 			InboundProtocol: node.InboundProtocol,
 			OutboundJSON:    node.OutboundJSON,
 			Enabled:         !node.Disabled,
-		})
+		}
+		if err := m.store.CreateNode(ctx, storeNode); err != nil {
+			return nil, err
+		}
+		return storeNode, nil
 	}
 
 	storeNode.Name = node.Name
@@ -1306,7 +1320,10 @@ func (m *Manager) upsertStoreNode(ctx context.Context, node config.NodeConfig) e
 	storeNode.InboundProtocol = node.InboundProtocol
 	storeNode.OutboundJSON = node.OutboundJSON
 	storeNode.Enabled = !node.Disabled
-	return m.store.UpdateNode(ctx, storeNode)
+	if err := m.store.UpdateNode(ctx, storeNode); err != nil {
+		return nil, err
+	}
+	return storeNode, nil
 }
 
 func (m *Manager) deleteStoreNode(ctx context.Context, name string) error {
@@ -1505,17 +1522,6 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 		}
 	}
 
-	if node.URI == "" {
-		node.URI = m.generatedOutboundURI(currentName, node.OutboundJSON)
-	}
-
-	// Check for name conflict (excluding current node when updating)
-	if idx := m.nodeIndexLocked(node.Name); idx != -1 {
-		if currentName == "" || m.cfg.Nodes[idx].Name != currentName {
-			return config.NodeConfig{}, fmt.Errorf("%w: 节点 %s 已存在", monitor.ErrNodeConflict, node.Name)
-		}
-	}
-
 	if node.OutboundJSON != "" {
 		normalizedJSON, err := builder.NormalizeOutboundJSON(node.Name, node.OutboundJSON)
 		if err != nil {
@@ -1528,6 +1534,20 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 			return config.NodeConfig{}, fmt.Errorf("%w: %v", monitor.ErrInvalidNode, err)
 		}
 		node.OutboundJSON = outboundJSON
+	}
+
+	if node.URI == "" {
+		node.URI = m.generatedOutboundURI(currentName, node.OutboundJSON)
+	}
+
+	// Check for name conflict (excluding current node when updating)
+	if idx := m.nodeIndexLocked(node.Name); idx != -1 {
+		if currentName == "" || m.cfg.Nodes[idx].Name != currentName {
+			return config.NodeConfig{}, fmt.Errorf("%w: 节点 %s 已存在", monitor.ErrNodeConflict, node.Name)
+		}
+	}
+	if existing := m.nodeByKeyLocked(node.NodeKey(), currentName); existing != "" {
+		return config.NodeConfig{}, fmt.Errorf("%w: 节点地址已被 %s 使用", monitor.ErrNodeConflict, existing)
 	}
 
 	if node.InboundProtocol != "" {
@@ -1549,6 +1569,21 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 	}
 
 	return node, nil
+}
+
+func (m *Manager) nodeByKeyLocked(nodeKey, currentName string) string {
+	if nodeKey == "" {
+		return ""
+	}
+	for _, existing := range m.cfg.Nodes {
+		if existing.Name == currentName {
+			continue
+		}
+		if existing.NodeKey() == nodeKey {
+			return existing.Name
+		}
+	}
+	return ""
 }
 
 func (m *Manager) storeNodeToConfig(node store.Node) config.NodeConfig {

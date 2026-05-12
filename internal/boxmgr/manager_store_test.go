@@ -263,7 +263,7 @@ func TestCreateJSONOnlyNodePersistsStructuredFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create json-only node: %v", err)
 	}
-	if created.URI == "" || created.OutboundJSON == "" || created.InboundProtocol != "socks5" {
+	if created.ID == 0 || created.URI == "" || created.OutboundJSON == "" || created.InboundProtocol != "socks5" {
 		t.Fatalf("created node missing structured fields: %+v", created)
 	}
 
@@ -274,6 +274,9 @@ func TestCreateJSONOnlyNodePersistsStructuredFields(t *testing.T) {
 	if storeNode == nil || storeNode.URI != created.URI || storeNode.OutboundJSON == "" || storeNode.InboundProtocol != "socks5" {
 		t.Fatalf("stored node = %+v, want structured fields", storeNode)
 	}
+	if created.ID != storeNode.ID {
+		t.Fatalf("created node ID = %d, want store ID %d", created.ID, storeNode.ID)
+	}
 
 	listed, err := mgr.ListConfigNodes(ctx)
 	if err != nil {
@@ -281,6 +284,44 @@ func TestCreateJSONOnlyNodePersistsStructuredFields(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].OutboundJSON == "" || listed[0].InboundProtocol != "socks5" {
 		t.Fatalf("listed nodes = %+v", listed)
+	}
+}
+
+func TestUpdateNodeReturnsStoreID(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	storeNode := &store.Node{
+		URI:     "http://user:pass@update.example.com:8080",
+		Name:    "update-node",
+		Source:  store.NodeSourceManual,
+		Enabled: true,
+	}
+	if err := st.CreateNode(ctx, storeNode); err != nil {
+		t.Fatalf("create store node: %v", err)
+	}
+	mgr := New(&config.Config{Nodes: []config.NodeConfig{{
+		Name: "update-node",
+		URI:  storeNode.URI,
+	}}}, monitor.Config{}, WithStore(st))
+
+	updated, err := mgr.UpdateNode(ctx, "update-node", config.NodeConfig{
+		Name: "renamed-update-node",
+		URI:  storeNode.URI,
+	})
+	if err != nil {
+		t.Fatalf("update node: %v", err)
+	}
+	if updated.ID != storeNode.ID {
+		t.Fatalf("updated node ID = %d, want store ID %d", updated.ID, storeNode.ID)
 	}
 }
 
@@ -310,6 +351,55 @@ func TestCreateNodeRejectsProxyPoolPortConflict(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "端口 2323 已被占用") {
 		t.Fatalf("create error = %v, want occupied port detail", err)
+	}
+}
+
+func TestCreateNodeRejectsDuplicateURI(t *testing.T) {
+	ctx := context.Background()
+	uri := "http://user:pass@example.com:8080"
+	mgr := New(&config.Config{Nodes: []config.NodeConfig{{
+		Name: "existing",
+		URI:  uri,
+	}}}, monitor.Config{})
+
+	_, err := mgr.CreateNode(ctx, config.NodeConfig{
+		Name: "duplicate",
+		URI:  uri,
+	})
+	if !errors.Is(err, monitor.ErrNodeConflict) {
+		t.Fatalf("create error = %v, want node conflict", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "节点地址已被 existing 使用") {
+		t.Fatalf("create error = %v, want duplicate address detail", err)
+	}
+
+	nodes, listErr := mgr.ListConfigNodes(ctx)
+	if listErr != nil {
+		t.Fatalf("list nodes: %v", listErr)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("nodes = %+v, want only existing node", nodes)
+	}
+}
+
+func TestUpdateNodeRejectsDuplicateURI(t *testing.T) {
+	ctx := context.Background()
+	firstURI := "http://user:pass@one.example.com:8080"
+	secondURI := "http://user:pass@two.example.com:8080"
+	mgr := New(&config.Config{Nodes: []config.NodeConfig{
+		{Name: "one", URI: firstURI},
+		{Name: "two", URI: secondURI},
+	}}, monitor.Config{})
+
+	_, err := mgr.UpdateNode(ctx, "two", config.NodeConfig{
+		Name: "two",
+		URI:  firstURI,
+	})
+	if !errors.Is(err, monitor.ErrNodeConflict) {
+		t.Fatalf("update error = %v, want node conflict", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "节点地址已被 one 使用") {
+		t.Fatalf("update error = %v, want duplicate address detail", err)
 	}
 }
 
