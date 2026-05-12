@@ -347,6 +347,60 @@ func TestMonitorProxyCredentialsSkipsUnauthenticatedEnabledProxyPool(t *testing.
 	}
 }
 
+func TestHandleExportGeoIPUsesAuthenticatedPoolCredentials(t *testing.T) {
+	mgr, err := NewManager(Config{})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	t.Cleanup(mgr.Stop)
+
+	server := &Server{
+		mgr: mgr,
+		cfgSrc: &config.Config{
+			GeoIP: config.GeoIPConfig{Enabled: true, Listen: "127.0.0.1", Port: 1221},
+			ProxyPools: []config.ProxyPoolConfig{
+				{
+					ID:      1,
+					Name:    "public",
+					Enabled: true,
+					Listener: config.ListenerConfig{
+						Address:  "127.0.0.1",
+						Port:     2323,
+						Protocol: config.InboundProtocolHTTP,
+					},
+				},
+				{
+					ID:      2,
+					Name:    "authenticated",
+					Enabled: true,
+					Listener: config.ListenerConfig{
+						Address:  "127.0.0.1",
+						Port:     2324,
+						Protocol: config.InboundProtocolHTTP,
+						Username: "pool-user",
+						Password: "pool-pass",
+					},
+				},
+			},
+		},
+		logger: log.Default(),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/export?scheme=http", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleExport(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("http://pool-user:pool-pass@127.0.0.1:1221")) {
+		t.Fatalf("body = %s, want authenticated GeoIP export URI", rec.Body.String())
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("http://127.0.0.1:1221")) {
+		t.Fatalf("body = %s, should not include unauthenticated GeoIP URI", rec.Body.String())
+	}
+}
+
 func jsonNumber(value int64) string {
 	return strconv.FormatInt(value, 10)
 }

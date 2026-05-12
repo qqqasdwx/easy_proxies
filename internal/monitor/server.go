@@ -742,9 +742,11 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 	s.cfgMu.RLock()
 	var multiPortCfg config.MultiPortConfig
+	var listenerCfg config.ListenerConfig
 	var geoipCfg config.GeoIPConfig
 	var proxyPools []config.ProxyPoolConfig
 	if s.cfgSrc != nil {
+		listenerCfg = s.cfgSrc.Listener
 		multiPortCfg = s.cfgSrc.MultiPort
 		geoipCfg = s.cfgSrc.GeoIP
 		proxyPools = append([]config.ProxyPoolConfig(nil), s.cfgSrc.ProxyPools...)
@@ -786,8 +788,13 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var geoAuth string
-		if proxyPool := firstEnabledProxyPool(proxyPools); proxyPool != nil && proxyPool.Listener.Username != "" {
-			geoAuth = fmt.Sprintf("%s:%s@", proxyPool.Listener.Username, proxyPool.Listener.Password)
+		geoUsername, geoPassword := monitorProxyCredentials(&config.Config{
+			Listener:   listenerCfg,
+			MultiPort:  multiPortCfg,
+			ProxyPools: proxyPools,
+		})
+		if geoUsername != "" {
+			geoAuth = fmt.Sprintf("%s:%s@", geoUsername, geoPassword)
 		}
 		regions := geoip.AllRegions()
 		var pathParts []string
