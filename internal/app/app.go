@@ -172,7 +172,11 @@ func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store)
 	filtered := cfg.Nodes[:0]
 	for _, node := range cfg.Nodes {
 		seen[node.URI] = struct{}{}
-		if storeNode, ok := storeByURI[node.URI]; ok && !storeNode.Enabled {
+		if storeNode, ok := storeByURI[node.URI]; ok {
+			if !storeNode.Enabled {
+				continue
+			}
+			filtered = append(filtered, storeNodeToConfig(storeNode))
 			continue
 		}
 		filtered = append(filtered, node)
@@ -184,19 +188,25 @@ func applyStoreNodeState(ctx context.Context, cfg *config.Config, s store.Store)
 		if _, ok := seen[node.URI]; ok {
 			continue
 		}
-		filtered = append(filtered, config.NodeConfig{
-			Name:            node.Name,
-			URI:             node.URI,
-			OutboundJSON:    node.OutboundJSON,
-			Port:            node.Port,
-			InboundProtocol: node.InboundProtocol,
-			Username:        node.Username,
-			Password:        node.Password,
-			Source:          config.NodeSource(node.Source),
-		})
+		filtered = append(filtered, storeNodeToConfig(node))
 	}
 	cfg.Nodes = filtered
 	return nil
+}
+
+func storeNodeToConfig(node store.Node) config.NodeConfig {
+	return config.NodeConfig{
+		ID:              node.ID,
+		Name:            node.Name,
+		URI:             node.URI,
+		OutboundJSON:    node.OutboundJSON,
+		Port:            node.Port,
+		InboundProtocol: node.InboundProtocol,
+		Username:        node.Username,
+		Password:        node.Password,
+		Source:          config.NodeSource(node.Source),
+		Disabled:        !node.Enabled,
+	}
 }
 
 func periodicStatsFlush(ctx context.Context, boxMgr *boxmgr.Manager) {
