@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -996,6 +997,29 @@ func cleanStringList(values []string) []string {
 	return cleaned
 }
 
+func bundledSingBoxVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	for _, dep := range info.Deps {
+		if dep.Path != "github.com/sagernet/sing-box" {
+			continue
+		}
+		version := dep.Version
+		if dep.Replace != nil {
+			version = dep.Replace.Version
+			if version == "" {
+				version = dep.Replace.Path
+			}
+		}
+		if version != "" {
+			return version
+		}
+	}
+	return "unknown"
+}
+
 // handleSettings handles GET/PUT for dynamic settings (external_ip, probe_target, skip_cert_verify, log).
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -1011,6 +1035,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"external_ip":      extIP,
 			"probe_target":     probeTarget,
 			"log_level":        "",
+			"sing_box_version": bundledSingBoxVersion(),
 			"skip_cert_verify": skipCertVerify,
 			"log": map[string]any{
 				"output":      logCfg.Output,

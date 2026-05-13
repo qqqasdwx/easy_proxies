@@ -6,6 +6,7 @@ type SettingsSection = 'network' | 'health' | 'system'
 
 const defaultSettings: SettingsData = {
   log_level: 'info',
+  sing_box_version: 'unknown',
   external_ip: '',
   skip_cert_verify: false,
 
@@ -255,6 +256,13 @@ export default function SettingsPanel() {
       <SectionTitle title="系统" description="配置诊断输出、导出地址和全局连接选项。" />
 
       <Group title="诊断">
+        <fieldset className="fieldset">
+          <legend className="fieldset-legend">sing-box 核心版本</legend>
+          <div className="input input-md w-full bg-base-200/60 border-base-300/70 font-mono text-sm items-center">
+            {settings.sing_box_version}
+          </div>
+        </fieldset>
+
         <fieldset className="fieldset">
           <legend className="fieldset-legend">sing-box 日志级别</legend>
           <select className={selectClass} value={settings.log_level} onChange={e => updateField('log_level', e.target.value)}>

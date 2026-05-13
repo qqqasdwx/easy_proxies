@@ -83,6 +83,7 @@ export interface LogsResponse {
 export interface SettingsData {
   // Global
   log_level: string
+  sing_box_version: string
   external_ip: string
   skip_cert_verify: boolean
 

@@ -90,6 +90,7 @@ interface RawSettings {
   external_ip?: string
   probe_target?: string
   log_level?: string
+  sing_box_version?: string
   skip_cert_verify?: boolean
   multi_port?: {
     address?: string
@@ -361,6 +362,7 @@ export async function refreshGeoIPDatabase(): Promise<{ message: string; path?: 
 function normalizeSettings(raw: RawSettings): SettingsData {
   return {
     log_level: raw.log_level || 'info',
+    sing_box_version: raw.sing_box_version || 'unknown',
     external_ip: raw.external_ip || '',
     skip_cert_verify: raw.skip_cert_verify || false,
 

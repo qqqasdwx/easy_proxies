@@ -89,7 +89,7 @@ const shadowsocksPluginOptions = ['', 'obfs-local', 'v2ray-plugin']
 const vmessSecurityOptions = ['auto', 'none', 'zero', 'aes-128-gcm', 'chacha20-poly1305', 'aes-128-ctr']
 const packetEncodingOptions = ['', 'packetaddr', 'xudp']
 const flowOptions = ['', 'xtls-rprx-vision']
-const transportOptions = ['', 'http', 'ws', 'grpc', 'httpupgrade']
+const transportOptions = ['', 'http', 'ws', 'quic', 'grpc', 'httpupgrade']
 const tlsVersionOptions = ['', '1.0', '1.1', '1.2', '1.3']
 const tuicCongestionOptions = ['cubic', 'new_reno', 'bbr']
 const tuicRelayModeOptions = ['', 'native', 'quic']
@@ -423,6 +423,7 @@ function patchOutboundJSON(raw: string, nextForm: OutboundForm, patch: Partial<O
   if ('type' in patch) {
     setStringField(outbound, 'type', nextForm.type)
     clearUnsupportedManagedFields(outbound, nextForm.type)
+    if (requiresTLS(nextForm.type)) ensureObject(outbound, 'tls').enabled = true
   }
   if ('server' in patch) setStringField(outbound, 'server', nextForm.server)
   if ('server_port' in patch) setNumberField(outbound, 'server_port', nextForm.server_port)
@@ -453,8 +454,14 @@ function patchOutboundJSON(raw: string, nextForm: OutboundForm, patch: Partial<O
   if ('hop_interval' in patch) setStringField(outbound, 'hop_interval', nextForm.hop_interval)
   if ('brutal_debug' in patch) setBooleanField(outbound, 'brutal_debug', nextForm.brutal_debug)
   if ('congestion_control' in patch) setStringField(outbound, 'congestion_control', nextForm.congestion_control)
-  if ('udp_relay_mode' in patch) setStringField(outbound, 'udp_relay_mode', nextForm.udp_relay_mode)
-  if ('udp_over_stream' in patch) setBooleanField(outbound, 'udp_over_stream', nextForm.udp_over_stream)
+  if ('udp_relay_mode' in patch) {
+    setStringField(outbound, 'udp_relay_mode', nextForm.udp_relay_mode)
+    if (nextForm.udp_relay_mode) delete outbound.udp_over_stream
+  }
+  if ('udp_over_stream' in patch) {
+    setBooleanField(outbound, 'udp_over_stream', nextForm.udp_over_stream)
+    if (nextForm.udp_over_stream) delete outbound.udp_relay_mode
+  }
   if ('zero_rtt_handshake' in patch) setBooleanField(outbound, 'zero_rtt_handshake', nextForm.zero_rtt_handshake)
   if ('heartbeat' in patch) setStringField(outbound, 'heartbeat', nextForm.heartbeat)
   if ('idle_session_check_interval' in patch) setStringField(outbound, 'idle_session_check_interval', nextForm.idle_session_check_interval)
@@ -462,11 +469,11 @@ function patchOutboundJSON(raw: string, nextForm: OutboundForm, patch: Partial<O
   if ('min_idle_session' in patch) setNumberField(outbound, 'min_idle_session', nextForm.min_idle_session)
 
   if (hasPatch(patch, tlsPatchFields)) {
-    if ('tls_enabled' in patch && !nextForm.tls_enabled) {
+    if ('tls_enabled' in patch && !nextForm.tls_enabled && !requiresTLS(nextForm.type)) {
       delete outbound.tls
     } else {
       const tls = ensureObject(outbound, 'tls')
-      if ('tls_enabled' in patch) tls.enabled = true
+      if ('tls_enabled' in patch || requiresTLS(nextForm.type)) tls.enabled = true
       if ('tls_server_name' in patch) setStringField(tls, 'server_name', nextForm.tls_server_name)
       if ('tls_insecure' in patch) setBooleanField(tls, 'insecure', nextForm.tls_insecure)
       if ('tls_alpn' in patch) setArrayField(tls, 'alpn', nextForm.tls_alpn)
@@ -526,6 +533,10 @@ function supportsNetwork(type: string) {
 
 function supportsTLS(type: string) {
   return ['http', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'anytls'].includes(type)
+}
+
+function requiresTLS(type: string) {
+  return ['hysteria2', 'tuic', 'anytls'].includes(type)
 }
 
 function isSupportedURI(value: string) {
@@ -595,7 +606,7 @@ export default function NodeEditorModal({
     const next = { ...outboundForm, ...patch }
     const outboundJSON = patchOutboundJSON(form.outbound_json || '', next, patch, form.name)
     const synced = parseOutboundForm(outboundJSON) || next
-    setOutboundForm({ ...synced, ...patch })
+    setOutboundForm(synced)
     onChange({ ...form, outbound_json: outboundJSON })
     setJsonError('')
   }
@@ -646,6 +657,7 @@ export default function NodeEditorModal({
   }
 
   const title = readOnly ? `查看节点: ${editingName}` : editingName ? `编辑节点: ${editingName}` : '添加节点'
+  const tlsActive = outboundForm.tls_enabled || requiresTLS(outboundForm.type)
 
   return (
     <div className="modal modal-open">
@@ -920,10 +932,10 @@ export default function NodeEditorModal({
                   <div className="divider my-1 text-xs">TLS</div>
                   <div className="grid md:grid-cols-2 gap-3">
                     <label className="label cursor-pointer justify-start gap-3">
-                      <input type="checkbox" className="toggle toggle-sm" checked={outboundForm.tls_enabled} disabled={readOnly} onChange={(e) => updateOutboundForm({ tls_enabled: e.target.checked })} />
+                      <input type="checkbox" className="toggle toggle-sm" checked={tlsActive} disabled={readOnly || requiresTLS(outboundForm.type)} onChange={(e) => updateOutboundForm({ tls_enabled: e.target.checked })} />
                       <span className="label-text">启用 TLS</span>
                     </label>
-                    {outboundForm.tls_enabled && (
+                    {tlsActive && (
                       <>
                         <fieldset className="fieldset">
                           <legend className="fieldset-legend">SNI</legend>

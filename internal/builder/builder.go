@@ -688,7 +688,28 @@ func outboundFromJSON(tag, rawJSON string) (option.Outbound, error) {
 		return option.Outbound{}, errors.New("outbound_json missing type")
 	}
 	outbound.Tag = tag
+	ensureRequiredOutboundTLS(&outbound)
 	return outbound, nil
+}
+
+func ensureRequiredOutboundTLS(outbound *option.Outbound) {
+	switch opts := outbound.Options.(type) {
+	case *option.Hysteria2OutboundOptions:
+		if opts.TLS == nil {
+			opts.TLS = &option.OutboundTLSOptions{}
+		}
+		opts.TLS.Enabled = true
+	case *option.TUICOutboundOptions:
+		if opts.TLS == nil {
+			opts.TLS = &option.OutboundTLSOptions{}
+		}
+		opts.TLS.Enabled = true
+	case *option.AnyTLSOutboundOptions:
+		if opts.TLS == nil {
+			opts.TLS = &option.OutboundTLSOptions{}
+		}
+		opts.TLS.Enabled = true
+	}
 }
 
 func marshalOutboundJSON(outbound option.Outbound) (string, error) {
@@ -950,9 +971,8 @@ func buildV2RayTransport(query url.Values) (*option.V2RayTransportOptions, error
 
 	// Pre-validate transport type - reject unsupported types early
 	unsupportedTransports := map[string]bool{
-		"kcp":  true,
-		"raw":  true,
-		"quic": true, // sing-box doesn't support QUIC as V2Ray transport
+		"kcp": true,
+		"raw": true,
 	}
 	if unsupportedTransports[transportType] {
 		return nil, fmt.Errorf("unsupported transport type: %s", transportType)
@@ -987,15 +1007,20 @@ func buildV2RayTransport(query url.Values) (*option.V2RayTransportOptions, error
 		}
 	case C.V2RayTransportTypeGRPC:
 		options.GRPCOptions.ServiceName = query.Get("serviceName")
+		if options.GRPCOptions.ServiceName == "" {
+			options.GRPCOptions.ServiceName = query.Get("service_name")
+		}
 	case C.V2RayTransportTypeHTTPUpgrade:
 		options.HTTPUpgradeOptions.Path = query.Get("path")
+		options.HTTPUpgradeOptions.Host = query.Get("host")
+	case C.V2RayTransportTypeQUIC:
 	case "xhttp":
 		// XHTTP is not supported by sing-box, fallback to HTTPUpgrade
 		log.Printf("⚠️  XHTTP transport not supported by sing-box, falling back to HTTPUpgrade")
 		options.Type = C.V2RayTransportTypeHTTPUpgrade
 		options.HTTPUpgradeOptions.Path = query.Get("path")
 		if host := query.Get("host"); host != "" {
-			options.HTTPUpgradeOptions.Headers = badoption.HTTPHeader{"Host": {host}}
+			options.HTTPUpgradeOptions.Host = host
 		}
 	default:
 		return nil, fmt.Errorf("unsupported transport type %q", transportType)
@@ -1036,9 +1061,11 @@ func buildShadowsocksOptions(u *url.URL) (option.ShadowsocksOutboundOptions, err
 
 	query := u.Query()
 	if plugin := query.Get("plugin"); plugin != "" {
-		// sing-box library mode doesn't support external plugins like v2ray-plugin
-		// These require the plugin binary to be installed separately
-		return option.ShadowsocksOutboundOptions{}, fmt.Errorf("shadowsocks plugin not supported: %s (requires external binary)", plugin)
+		opts.Plugin = plugin
+		opts.PluginOptions = query.Get("plugin_opts")
+		if opts.PluginOptions == "" {
+			opts.PluginOptions = query.Get("plugin-opts")
+		}
 	}
 
 	return opts, nil
