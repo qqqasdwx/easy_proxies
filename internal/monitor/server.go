@@ -1291,6 +1291,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.cfg.ProbeTarget = next.Management.ProbeTarget
 		s.cfg.SkipCertVerify = next.SkipCertVerify
 		s.cfg.ProxyUsername, s.cfg.ProxyPassword = monitorProxyCredentials(&next)
+		if s.mgr != nil {
+			s.mgr.UpdateConfig(s.cfg)
+		}
 		if req.HealthCheck != nil && s.mgr != nil {
 			s.mgr.StartPeriodicHealthCheck(next.HealthCheck.Interval, next.HealthCheck.Timeout, next.HealthCheck.Concurrency)
 		}

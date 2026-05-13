@@ -66,6 +66,25 @@ func TestSetTrafficRestoresTotals(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigRefreshesProbeDestination(t *testing.T) {
+	mgr, err := NewManager(Config{ProbeTarget: "https://example.com/generate_204"})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	defer mgr.Stop()
+
+	initial, ok := mgr.DestinationForProbe()
+	if !ok || initial.String() != "example.com:443" {
+		t.Fatalf("initial probe destination = %q, %v; want example.com:443", initial.String(), ok)
+	}
+
+	mgr.UpdateConfig(Config{ProbeTarget: "http://127.0.0.1:18080/generate_204"})
+	updated, ok := mgr.DestinationForProbe()
+	if !ok || updated.String() != "127.0.0.1:18080" {
+		t.Fatalf("updated probe destination = %q, %v; want 127.0.0.1:18080", updated.String(), ok)
+	}
+}
+
 func TestHandleTrafficStreamInitialEvent(t *testing.T) {
 	mgr, err := NewManager(Config{})
 	if err != nil {

@@ -154,35 +154,18 @@ func NewManager(cfg Config) (*Manager, error) {
 		ctx:    ctx,
 		cancel: cancel,
 	}
-	if cfg.ProbeTarget != "" {
-		target := cfg.ProbeTarget
-		// Strip URL scheme if present (e.g., "https://www.google.com:443" -> "www.google.com:443")
-		if strings.HasPrefix(target, "https://") {
-			target = strings.TrimPrefix(target, "https://")
-		} else if strings.HasPrefix(target, "http://") {
-			target = strings.TrimPrefix(target, "http://")
-		}
-		// Remove trailing path if present
-		if idx := strings.Index(target, "/"); idx != -1 {
-			target = target[:idx]
-		}
-		host, port, err := net.SplitHostPort(target)
-		if err != nil {
-			// If no port specified, use default based on original scheme
-			if strings.HasPrefix(cfg.ProbeTarget, "https://") {
-				host = target
-				port = "443"
-			} else {
-				host = target
-				port = "80"
-			}
-		}
-		parsed := M.ParseSocksaddrHostPort(host, parsePort(port))
-		m.probeDst = parsed
-		m.probeReady = true
-	}
+	m.probeDst, m.probeReady = parseProbeDestination(cfg.ProbeTarget)
 	go m.startTrafficSpeedSampler()
 	return m, nil
+}
+
+// UpdateConfig refreshes monitor runtime settings that are safe to change from
+// the WebUI without rebuilding the manager itself.
+func (m *Manager) UpdateConfig(cfg Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg = cfg
+	m.probeDst, m.probeReady = parseProbeDestination(cfg.ProbeTarget)
 }
 
 // SetLogger sets the logger for the manager.
@@ -192,7 +175,8 @@ func (m *Manager) SetLogger(logger Logger) {
 
 // StartPeriodicHealthCheck starts or restarts background health checks.
 func (m *Manager) StartPeriodicHealthCheck(interval, timeout time.Duration, concurrency int) {
-	if !m.probeReady {
+	_, ready := m.DestinationForProbe()
+	if !ready {
 		if m.logger != nil {
 			m.logger.Warn("probe target not configured, periodic health check disabled")
 		}
@@ -392,10 +376,41 @@ func (m *Manager) ClearNodes() {
 
 // DestinationForProbe exposes the configured destination for health checks.
 func (m *Manager) DestinationForProbe() (M.Socksaddr, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if !m.probeReady {
 		return M.Socksaddr{}, false
 	}
 	return m.probeDst, true
+}
+
+func parseProbeDestination(probeTarget string) (M.Socksaddr, bool) {
+	if probeTarget == "" {
+		return M.Socksaddr{}, false
+	}
+	target := probeTarget
+	// Strip URL scheme if present (e.g., "https://www.google.com:443" -> "www.google.com:443")
+	if strings.HasPrefix(target, "https://") {
+		target = strings.TrimPrefix(target, "https://")
+	} else if strings.HasPrefix(target, "http://") {
+		target = strings.TrimPrefix(target, "http://")
+	}
+	// Remove trailing path if present
+	if idx := strings.Index(target, "/"); idx != -1 {
+		target = target[:idx]
+	}
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		// If no port specified, use default based on original scheme
+		if strings.HasPrefix(probeTarget, "https://") {
+			host = target
+			port = "443"
+		} else {
+			host = target
+			port = "80"
+		}
+	}
+	return M.ParseSocksaddrHostPort(host, parsePort(port)), true
 }
 
 // Snapshot returns a sorted copy of current node states.
