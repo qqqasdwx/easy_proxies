@@ -47,6 +47,17 @@ function poolToPayload(pool: ProxyPool): ProxyPoolPayload {
   }
 }
 
+function normalizePayload(payload: ProxyPoolPayload): ProxyPoolPayload {
+  return {
+    ...payload,
+    node_ids: [...payload.node_ids].sort((a, b) => a - b),
+  }
+}
+
+function payloadsEqual(left: ProxyPoolPayload, right: ProxyPoolPayload) {
+  return JSON.stringify(normalizePayload(left)) === JSON.stringify(normalizePayload(right))
+}
+
 function formatUpdatedAt(value: string) {
   if (!value) return '未下载'
   const date = new Date(value)
@@ -59,18 +70,27 @@ export default function ProxyPoolsPanel() {
   const [nodes, setNodes] = useState<ConfigNodeConfig[]>([])
   const [settings, setSettings] = useState<SettingsData | null>(null)
   const [editingID, setEditingID] = useState<number | null>(null)
+  const [draftPool, setDraftPool] = useState<ProxyPoolPayload | null>(null)
   const [form, setForm] = useState<ProxyPoolPayload>(emptyPool)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [savingGeoIP, setSavingGeoIP] = useState(false)
   const [geoIPDirty, setGeoIPDirty] = useState(false)
   const [refreshingGeoIP, setRefreshingGeoIP] = useState(false)
+  const [geoIPOpen, setGeoIPOpen] = useState(false)
+  const [geoIPSnapshot, setGeoIPSnapshot] = useState<SettingsData | null>(null)
+  const [togglingPoolID, setTogglingPoolID] = useState<number | null>(null)
   const [needReload, setNeedReload] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
   const activeNodes = useMemo(() => nodes.filter(node => !node.disabled && node.id), [nodes])
   const selectedNodeIDs = useMemo(() => new Set(form.node_ids), [form.node_ids])
+  const selectedPool = useMemo(() => pools.find(pool => pool.id === editingID) || null, [pools, editingID])
+  const selectedPoolDirty = useMemo(() => {
+    if (!selectedPool || draftPool) return false
+    return !payloadsEqual(form, poolToPayload(selectedPool))
+  }, [selectedPool, draftPool, form])
 
   const load = async () => {
     setError('')
@@ -109,9 +129,13 @@ export default function ProxyPoolsPanel() {
 
   const updateField = <K extends keyof ProxyPoolPayload>(key: K, value: ProxyPoolPayload[K]) => {
     setForm(prev => ({ ...prev, [key]: value }))
+    if (editingID === null && draftPool) {
+      setDraftPool(prev => prev ? { ...prev, [key]: value } : prev)
+    }
   }
 
   const selectPool = (pool: ProxyPool) => {
+    setDraftPool(null)
     setEditingID(pool.id)
     setForm(poolToPayload(pool))
     setError('')
@@ -151,8 +175,10 @@ export default function ProxyPoolsPanel() {
     const usedPorts = collectUsedPorts()
     let nextPort = 2323
     while (usedPorts.has(nextPort)) nextPort++
+    const draft = { ...emptyPool, listen_port: nextPort, name: `代理池 ${pools.length + 1}` }
     setEditingID(null)
-    setForm({ ...emptyPool, listen_port: nextPort, name: `代理池 ${pools.length + 1}` })
+    setDraftPool(draft)
+    setForm(draft)
     setError('')
   }
 
@@ -161,7 +187,9 @@ export default function ProxyPoolsPanel() {
       const next = new Set(prev.node_ids)
       if (next.has(nodeID)) next.delete(nodeID)
       else next.add(nodeID)
-      return { ...prev, node_ids: Array.from(next).sort((a, b) => a - b) }
+      const nextForm = { ...prev, node_ids: Array.from(next).sort((a, b) => a - b) }
+      if (editingID === null) setDraftPool(nextForm)
+      return nextForm
     })
   }
 
@@ -183,6 +211,7 @@ export default function ProxyPoolsPanel() {
       setNeedReload(true)
       await load()
       if (res.proxy_pool) {
+        setDraftPool(null)
         setEditingID(res.proxy_pool.id)
         setForm(poolToPayload(res.proxy_pool))
       }
@@ -201,6 +230,7 @@ export default function ProxyPoolsPanel() {
       setSuccess(res.message || '代理池已删除')
       setNeedReload(true)
       setEditingID(null)
+      setDraftPool(null)
       setForm(emptyPool)
       await load()
     } catch (err) {
@@ -208,9 +238,40 @@ export default function ProxyPoolsPanel() {
     }
   }
 
+  const togglePoolEnabled = async (pool: ProxyPool, enabled: boolean) => {
+    setTogglingPoolID(pool.id)
+    setError('')
+    setSuccess('')
+    try {
+      const res = await updateProxyPool(pool.id, { ...poolToPayload(pool), enabled })
+      setSuccess(res.message || `代理池已${enabled ? '启用' : '停用'}`)
+      setNeedReload(res.need_reload ?? true)
+      setPools(prev => prev.map(item => item.id === pool.id ? { ...item, enabled } : item))
+      if (editingID === pool.id) {
+        setForm(prev => ({ ...prev, enabled }))
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '更新代理池状态失败')
+    } finally {
+      setTogglingPoolID(null)
+    }
+  }
+
   const updateGeoIPField = <K extends keyof SettingsData>(key: K, value: SettingsData[K]) => {
     setSettings(prev => prev ? { ...prev, [key]: value } : prev)
     setGeoIPDirty(true)
+  }
+
+  const openGeoIPSettings = () => {
+    setGeoIPSnapshot(settings)
+    setGeoIPOpen(true)
+  }
+
+  const closeGeoIPSettings = () => {
+    if (geoIPSnapshot) setSettings(geoIPSnapshot)
+    setGeoIPSnapshot(null)
+    setGeoIPDirty(false)
+    setGeoIPOpen(false)
   }
 
   const saveGeoIPSettings = async () => {
@@ -234,6 +295,8 @@ export default function ProxyPoolsPanel() {
       setSuccess(res.message || 'GeoIP 设置已保存')
       setNeedReload(res.need_reload ?? true)
       setGeoIPDirty(false)
+      setGeoIPSnapshot(null)
+      setGeoIPOpen(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存 GeoIP 设置失败')
     } finally {
@@ -247,6 +310,11 @@ export default function ProxyPoolsPanel() {
     try {
       const res = await refreshGeoIPDatabase()
       setSettings(prev => prev ? {
+        ...prev,
+        geoip_database_path: res.path || prev.geoip_database_path,
+        geoip_database_updated_at: res.database_updated_at || prev.geoip_database_updated_at,
+      } : prev)
+      setGeoIPSnapshot(prev => prev ? {
         ...prev,
         geoip_database_path: res.path || prev.geoip_database_path,
         geoip_database_updated_at: res.database_updated_at || prev.geoip_database_updated_at,
@@ -290,6 +358,12 @@ export default function ProxyPoolsPanel() {
             <p className="text-sm text-base-content/50 mt-1.5 ml-[3.25rem]">独立配置监听、调度和成员节点</p>
           </div>
           <div className="flex items-center gap-2">
+            <button className="btn btn-sm lg:btn-md btn-ghost border border-base-300" onClick={openGeoIPSettings} disabled={!settings}>
+              GeoIP
+              <span className={`badge badge-xs ${settings?.geoip_enabled ? 'badge-primary' : 'badge-ghost'}`}>
+                {settings?.geoip_enabled ? '已启用' : '未启用'}
+              </span>
+            </button>
             <button className="btn btn-sm lg:btn-md btn-primary" onClick={createDraft}>添加代理池</button>
             {needReload && <button className="btn btn-warning btn-sm lg:btn-md" onClick={reload}>重载配置</button>}
           </div>
@@ -301,93 +375,72 @@ export default function ProxyPoolsPanel() {
         {success && <div role="alert" className="alert alert-success alert-soft text-sm"><span>{success}</span></div>}
         {needReload && <div role="alert" className="alert alert-warning alert-soft text-sm"><span>代理入口配置已变化，请重载后生效。</span></div>}
 
-        <section className="border border-base-300/60 rounded-lg bg-base-100 p-4 md:p-5">
-          <div className="flex items-center justify-between gap-4 mb-4">
-            <div>
-              <h3 className="font-bold text-lg">GeoIP</h3>
-              <p className="text-sm text-base-content/50 mt-1">启用后，所有代理池都会生成地域路由入口。</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <button className="btn btn-sm btn-primary" onClick={saveGeoIPSettings} disabled={!settings || !geoIPDirty || savingGeoIP}>
-                {savingGeoIP ? <span className="loading loading-spinner loading-xs"></span> : '保存'}
-              </button>
-              <input
-                type="checkbox"
-                className="toggle toggle-primary"
-                checked={settings?.geoip_enabled || false}
-                onChange={e => updateGeoIPField('geoip_enabled', e.target.checked)}
-              />
-            </div>
-          </div>
-          {settings?.geoip_enabled && (
-            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_13rem_9rem_12rem] gap-4 items-end">
-              <fieldset className="fieldset">
-                <legend className="fieldset-legend">数据库文件</legend>
-                <div className="min-h-12 rounded-lg border border-base-300/70 bg-base-200/40 px-3 py-2">
-                  <div className="font-mono text-sm break-all">{settings.geoip_database_path || '-'}</div>
-                  <div className="text-xs text-base-content/50 mt-1">最近更新时间：{formatUpdatedAt(settings.geoip_database_updated_at)}</div>
-                </div>
-              </fieldset>
-              <fieldset className="fieldset">
-                <legend className="fieldset-legend">路由监听地址</legend>
-                <input
-                  className={inputClass}
-                  value={settings.geoip_listen}
-                  placeholder="0.0.0.0"
-                  onChange={e => updateGeoIPField('geoip_listen', e.target.value)}
-                />
-              </fieldset>
-              <fieldset className="fieldset">
-                <legend className="fieldset-legend">路由端口</legend>
-                <input
-                  type="number"
-                  className={inputClass}
-                  min={1}
-                  max={65535}
-                  value={settings.geoip_port}
-                  onChange={e => updateGeoIPField('geoip_port', parseInt(e.target.value) || 1221)}
-                />
-              </fieldset>
-              <button className="btn btn-ghost border border-base-300" onClick={refreshGeoIP} disabled={refreshingGeoIP}>
-                {refreshingGeoIP ? <span className="loading loading-spinner loading-sm"></span> : '刷新数据库'}
-              </button>
-              <label className="flex items-center justify-between gap-3 rounded-lg border border-base-300/70 px-3 py-2">
-                <span className="font-semibold text-sm">自动更新</span>
-                <input
-                  type="checkbox"
-                  className="toggle toggle-primary toggle-sm"
-                  checked={settings.geoip_auto_update_enabled}
-                  onChange={e => updateGeoIPField('geoip_auto_update_enabled', e.target.checked)}
-                />
-              </label>
-              {settings.geoip_auto_update_enabled && (
-                <fieldset className="fieldset xl:col-span-2">
-                  <legend className="fieldset-legend">更新间隔</legend>
-                  <input className={inputClass} value={settings.geoip_auto_update_interval} onChange={e => updateGeoIPField('geoip_auto_update_interval', e.target.value)} />
-                </fieldset>
-              )}
-            </div>
-          )}
-        </section>
-
         <div className="grid grid-cols-1 xl:grid-cols-[320px_1fr] gap-5">
           <aside className="border border-base-300/60 rounded-lg bg-base-100 overflow-hidden">
             <div className="px-4 py-3 border-b border-base-300/60 font-bold">代理池</div>
-            {pools.length === 0 ? (
+            {pools.length === 0 && !draftPool ? (
               <div className="p-4 text-sm text-base-content/50">暂无代理池</div>
-            ) : pools.map(pool => (
-              <button
-                key={pool.id}
-                className={`w-full text-left px-4 py-3 border-b border-base-300/40 last:border-b-0 hover:bg-base-200/70 ${editingID === pool.id ? 'bg-primary/10 text-primary' : ''}`}
-                onClick={() => selectPool(pool)}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="font-bold truncate">{pool.name}</span>
-                  {!pool.enabled && <span className="badge badge-ghost badge-xs">停用</span>}
-                </div>
-                <div className="text-xs opacity-60 mt-1 font-mono">{pool.protocol} {pool.listen_address}:{pool.listen_port}</div>
-              </button>
-            ))}
+            ) : (
+              <>
+                {draftPool && (
+                  <div className="w-full text-left px-4 py-3 border-b border-base-300/40 bg-primary/10 text-primary cursor-default">
+                    <div className="flex items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold truncate">{draftPool.name}</span>
+                          <span className="badge badge-primary badge-xs">未保存</span>
+                        </div>
+                        <div className="text-xs opacity-60 mt-1 font-mono">{draftPool.protocol} {draftPool.listen_address}:{draftPool.listen_port}</div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-primary toggle-sm shrink-0"
+                        checked={draftPool.enabled}
+                        aria-label={`${draftPool.enabled ? '停用' : '启用'} ${draftPool.name}`}
+                        onChange={event => updateField('enabled', event.target.checked)}
+                      />
+                    </div>
+                  </div>
+                )}
+                {pools.map(pool => (
+                  (() => {
+                    const isDirty = selectedPoolDirty && editingID === pool.id
+                    return (
+                  <div
+                    key={pool.id}
+                    role="button"
+                    tabIndex={0}
+                    className={`w-full text-left px-4 py-3 border-b border-base-300/40 last:border-b-0 hover:bg-base-200/70 cursor-pointer ${editingID === pool.id ? 'bg-primary/10 text-primary' : ''}`}
+                    onClick={() => selectPool(pool)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter' || event.key === ' ') selectPool(pool)
+                    }}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold truncate">{pool.name}</span>
+                          {isDirty && <span className="badge badge-primary badge-xs">未保存</span>}
+                          {!pool.enabled && <span className="badge badge-ghost badge-xs">停用</span>}
+                        </div>
+                        <div className="text-xs opacity-60 mt-1 font-mono">{pool.protocol} {pool.listen_address}:{pool.listen_port}</div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-primary toggle-sm shrink-0"
+                        checked={pool.enabled}
+                        disabled={togglingPoolID === pool.id}
+                        aria-label={`${pool.enabled ? '停用' : '启用'} ${pool.name}`}
+                        onClick={event => event.stopPropagation()}
+                        onChange={event => togglePoolEnabled(pool, event.target.checked)}
+                      />
+                    </div>
+                  </div>
+                    )
+                  })()
+                ))}
+              </>
+            )}
           </aside>
 
           <main className="border border-base-300/60 rounded-lg bg-base-100 px-4 md:px-6 py-5 min-w-0">
@@ -395,13 +448,6 @@ export default function ProxyPoolsPanel() {
               <fieldset className="fieldset">
                 <legend className="fieldset-legend">名称</legend>
                 <input className={inputClass} value={form.name} onChange={e => updateField('name', e.target.value)} />
-              </fieldset>
-              <fieldset className="fieldset">
-                <legend className="fieldset-legend">状态</legend>
-                <label className="flex h-12 items-center justify-between rounded-lg border border-base-300/70 px-3">
-                  <span className="font-semibold">{form.enabled ? '启用' : '停用'}</span>
-                  <input type="checkbox" className="toggle toggle-primary" checked={form.enabled} onChange={e => updateField('enabled', e.target.checked)} />
-                </label>
               </fieldset>
               <fieldset className="fieldset">
                 <legend className="fieldset-legend">监听地址</legend>
@@ -490,6 +536,97 @@ export default function ProxyPoolsPanel() {
           </main>
         </div>
       </div>
+
+      {geoIPOpen && settings && (
+        <div className="modal modal-open">
+          <div className="modal-box max-w-3xl">
+            <h3 className="font-bold text-xl mb-1">GeoIP 设置</h3>
+            <p className="text-sm text-base-content/50 mb-5">启用后，所有代理池都会生成地域路由入口。</p>
+
+            <div className="space-y-4">
+              <label className="flex items-center justify-between gap-4 rounded-lg border border-base-300/70 px-4 py-3">
+                <div>
+                  <span className="font-bold block">启用 GeoIP 路由</span>
+                  <span className="text-xs text-base-content/55">开关会影响全部代理池。</span>
+                </div>
+                <input
+                  type="checkbox"
+                  className="toggle toggle-primary"
+                  checked={settings.geoip_enabled}
+                  onChange={e => updateGeoIPField('geoip_enabled', e.target.checked)}
+                />
+              </label>
+
+              {settings.geoip_enabled && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <fieldset className="fieldset md:col-span-2">
+                    <legend className="fieldset-legend">数据库文件</legend>
+                    <div className="rounded-lg border border-base-300/70 bg-base-200/40 px-3 py-2">
+                      <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-mono text-sm break-all">{settings.geoip_database_path || '-'}</div>
+                          <div className="text-xs text-base-content/50 mt-1">最近更新时间：{formatUpdatedAt(settings.geoip_database_updated_at)}</div>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <button className="btn btn-sm btn-ghost border border-base-300" onClick={refreshGeoIP} disabled={refreshingGeoIP}>
+                            {refreshingGeoIP ? <span className="loading loading-spinner loading-xs"></span> : '刷新'}
+                          </button>
+                          <label className="flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-100/60 px-3 py-2">
+                            <span className="font-semibold text-sm whitespace-nowrap">自动更新</span>
+                            <input
+                              type="checkbox"
+                              className="toggle toggle-primary toggle-sm"
+                              checked={settings.geoip_auto_update_enabled}
+                              onChange={e => updateGeoIPField('geoip_auto_update_enabled', e.target.checked)}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </fieldset>
+
+                  <fieldset className="fieldset">
+                    <legend className="fieldset-legend">路由监听地址</legend>
+                    <input
+                      className={inputClass}
+                      value={settings.geoip_listen}
+                      placeholder="0.0.0.0"
+                      onChange={e => updateGeoIPField('geoip_listen', e.target.value)}
+                    />
+                  </fieldset>
+
+                  <fieldset className="fieldset">
+                    <legend className="fieldset-legend">路由端口</legend>
+                    <input
+                      type="number"
+                      className={inputClass}
+                      min={1}
+                      max={65535}
+                      value={settings.geoip_port}
+                      onChange={e => updateGeoIPField('geoip_port', parseInt(e.target.value) || 1221)}
+                    />
+                  </fieldset>
+
+                  {settings.geoip_auto_update_enabled && (
+                    <fieldset className="fieldset md:col-span-2">
+                      <legend className="fieldset-legend">更新间隔</legend>
+                      <input className={inputClass} value={settings.geoip_auto_update_interval} onChange={e => updateGeoIPField('geoip_auto_update_interval', e.target.value)} />
+                    </fieldset>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="modal-action">
+              <button className="btn btn-ghost" onClick={closeGeoIPSettings}>取消</button>
+              <button className="btn btn-primary" onClick={saveGeoIPSettings} disabled={!geoIPDirty || savingGeoIP}>
+                {savingGeoIP ? <span className="loading loading-spinner loading-sm"></span> : '保存'}
+              </button>
+            </div>
+          </div>
+          <div className="modal-backdrop" aria-hidden="true"></div>
+        </div>
+      )}
     </div>
   )
 }
